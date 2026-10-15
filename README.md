@@ -26,38 +26,36 @@ O projeto atende a lista **Tickets** do space **Suporte B2C**. Os IDs da lista, 
 - **API do ClickUp**, acessada pelo `fetch` nativo do Node.js.
 - **Executor de testes nativo do Node.js**.
 
-As dependências estão fixadas no [package.json](discord-bot/package.json), com instalação reproduzível pelo [package-lock.json](discord-bot/package-lock.json).
+As dependências estão fixadas no [package.json](package.json), com instalação reproduzível pelo [package-lock.json](package-lock.json).
 
 ## Estrutura do repositório
 
 ```text
-TasksBot/
+discord-bot/
 ├── README.md
-└── discord-bot/
-    ├── src/
-    │   ├── index.js                 # Inicialização e encerramento
-    │   ├── config.js                # Validação da configuração
-    │   ├── commands/                # /help, /test e /ticket
-    │   ├── events/                  # Conexão e interações do Discord
-    │   ├── integrations/            # Cliente da API do ClickUp
-    │   └── services/                # Filtros, respostas e avisos
-    ├── scripts/
-    │   └── check-clickup.js         # Validação manual da autenticação
-    ├── test/                       # Testes automatizados
-    ├── .env.example                # Modelo de configuração
-    ├── .gitignore
-    ├── package.json
-    └── package-lock.json
+├── src/
+│   ├── index.js                 # Inicialização e encerramento
+│   ├── config.js                # Validação da configuração
+│   ├── commands/                # /help, /test e /ticket
+│   ├── events/                  # Conexão e interações do Discord
+│   ├── integrations/            # Cliente da API do ClickUp
+│   └── services/                # Filtros, respostas e avisos
+├── scripts/
+│   └── check-clickup.js         # Validação manual da autenticação
+├── test/                       # Testes automatizados
+├── .env.example                # Modelo de configuração
+├── .gitignore
+├── package.json
+└── package-lock.json
 ```
 
-O arquivo `discord-bot/.env`, o diretório `discord-bot/node_modules/` e o estado de execução em `discord-bot/.data/` são locais e estão ignorados pelo Git.
+O arquivo `.env`, o diretório `node_modules/` e o estado de execução em `.data/` são locais e estão ignorados pelo Git.
 
 ## Instalação
 
-Clone ou baixe este repositório. A partir da raiz, entre no projeto e instale as dependências:
+Clone ou baixe este repositório e, na pasta que contém `package.json`, instale as dependências:
 
 ```sh
-cd discord-bot
 npm ci
 ```
 
@@ -68,11 +66,11 @@ node --version
 npm --version
 ```
 
-Todos os comandos npm descritos abaixo devem ser executados dentro de `discord-bot/`.
+Todos os comandos npm descritos abaixo devem ser executados na raiz do projeto, na mesma pasta de `package.json`.
 
 ## Configuração
 
-Crie um arquivo `.env` dentro de `discord-bot/`, copiando o conteúdo de [.env.example](discord-bot/.env.example). Se já existir um `.env`, edite o arquivo existente para preservar suas credenciais.
+Crie um arquivo `.env` na raiz do projeto, copiando o conteúdo de [.env.example](.env.example). Se já existir um `.env`, edite o arquivo existente para preservar suas credenciais.
 
 ```dotenv
 DISCORD_TOKEN=
@@ -211,7 +209,7 @@ O monitor usa consultas periódicas à API e não exige um endereço público pa
 O controle fica em:
 
 ```text
-discord-bot/.data/ticket-notifications-<lista>-<canal>.json
+.data/ticket-notifications-<lista>-<canal>.json
 ```
 
 O arquivo registra o início do acompanhamento, o último ponto consultado e os IDs dos tickets já avisados. **Preserve `.data/` ao reiniciar ou transferir a execução do bot.** Esse estado é local e não deve ser publicado no GitHub.
@@ -224,7 +222,7 @@ Para desativar o monitor, defina `TICKET_NOTIFICATIONS_ENABLED=false` e reinicie
 
 ## Testes e verificações
 
-Dentro de `discord-bot/`:
+Na raiz do projeto:
 
 ```sh
 npm run check
@@ -275,6 +273,6 @@ Cada requisição ao ClickUp tem limite de 10 segundos, e uma consulta completa 
 
 O repositório deve incluir o código, os arquivos `package.json` e `package-lock.json`, o modelo `.env.example` e esta documentação.
 
-O [.gitignore](discord-bot/.gitignore) exclui `.env`, arquivos locais `.env.*` (preservando `.env.example`), `node_modules/`, `.data/`, cobertura de testes e logs de depuração do npm. Confira os arquivos preparados para o commit com `git status`.
+O [.gitignore](.gitignore) exclui `.env`, arquivos locais `.env.*` (preservando `.env.example`), `node_modules/`, `.data/`, cobertura de testes e logs de depuração do npm. Confira os arquivos preparados para o commit com `git status`.
 
 Preencha tokens e IDs da sua instalação somente no `.env` local. Os exemplos deste README usam valores vazios ou fictícios.
