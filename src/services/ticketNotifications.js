@@ -1,59 +1,75 @@
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { EmbedBuilder, PermissionFlagsBits, escapeMarkdown } from 'discord.js';
-import { ClickUpError, getAllTickets } from '../integrations/clickup.js';
+import { ClickUpError, getAllTickets, getTicket } from '../integrations/clickup.js';
 import { BotSetupError, describeError } from './errors.js';
 import { createNotificationStore } from './notificationState.js';
 
-export function createTicketMonitor({ store, scope, assigneeIds, fetchTickets, sendNotification, intervalMs = 30_000, now = Date.now, onError = () => {} }) {
+export function createTicketMonitor({ store, scope, fetchTickets, fetchTicket, sendNotification, intervalMs = 600_000, now = Date.now, onError = () => {} }) {
   let state;
   let timer;
   let inFlight;
+  let operations = Promise.resolve();
   let stopped = false;
   const controller = new AbortController();
-  const allowed = new Set(assigneeIds);
+
+  // API e Discord podem demorar; serializar impede corrida entre webhook e recuperação.
+  function serial(operation) {
+    const result = operations.then(() => { if (!stopped) return operation(); });
+    operations = result.catch(() => {});
+    return result;
+  }
 
   async function initialize() {
     if (state) return;
-    state = await store.read();
-    if (state) {
-      if (state.version !== 1 || state.scope !== scope || !Number.isFinite(state.startedAt) || state.startedAt <= 0 || !Number.isFinite(state.lastScan) || state.lastScan < state.startedAt || !Array.isArray(state.notifiedIds) || state.notifiedIds.some((id) => typeof id !== 'string')) {
+    const saved = await store.read();
+    if (saved) {
+      if (saved.version !== 1 || saved.scope !== scope || !Number.isFinite(saved.startedAt) || saved.startedAt <= 0 || !Number.isFinite(saved.lastScan) || saved.lastScan < saved.startedAt || !Array.isArray(saved.notifiedIds) || saved.notifiedIds.some((id) => typeof id !== 'string')
+        || (saved.allTicketsSince !== undefined && (!Number.isFinite(saved.allTicketsSince) || saved.allTicketsSince < saved.startedAt))) {
         throw new BotSetupError('Estado dos avisos inválido ou incompatível. O monitor foi interrompido para não repetir ou perder avisos.');
       }
+      // Ampliação do escopo: preservar histórico sem avisar retroativamente os antes excluídos.
+      const migrated = { ...saved, allTicketsSince: saved.allTicketsSince ?? Math.max(now(), saved.startedAt) };
+      if (saved.allTicketsSince === undefined) await store.write(migrated);
+      state = migrated;
     } else {
       const startedAt = now();
-      state = { version: 1, scope, startedAt, lastScan: startedAt, notifiedIds: [] };
-      await store.write(state);
+      const initial = { version: 1, scope, startedAt, allTicketsSince: startedAt, lastScan: startedAt, notifiedIds: [] };
+      await store.write(initial);
+      state = initial;
     }
+  }
+
+  async function notify(ticket) {
+    if (stopped || !ticket) return;
+    if (!Number.isFinite(ticket.createdAt) || ticket.createdAt <= 0) {
+      throw new BotSetupError('Um ticket retornou sem data de criação válida. O monitor repetirá a consulta sem avançar o controle.');
+    }
+    if (ticket.createdAt < state.allTicketsSince || state.notifiedIds.includes(ticket.id)) return;
+    await sendNotification(ticket);
+    const next = { ...state, notifiedIds: [...state.notifiedIds, ticket.id] };
+    // Só altera o estado em memória depois de persistir a confirmação.
+    await store.write(next);
+    state = next;
   }
 
   function poll() {
     if (inFlight) return inFlight;
     if (stopped) return Promise.resolve();
-    inFlight = (async () => {
+    inFlight = serial(async () => {
       if (!state) throw new BotSetupError('Inicialize o monitor antes de consultar novos tickets.');
       const scanStarted = Math.max(now(), state.lastScan);
       const tickets = await fetchTickets({
-        createdAfter: state.startedAt - 1,
-        updatedAfter: Math.max(state.startedAt - 1, state.lastScan - 60_000),
+        createdAfter: state.allTicketsSince - 1,
+        updatedAfter: Math.max(state.allTicketsSince - 1, state.lastScan - 60_000),
         signal: controller.signal,
       });
-      const notified = new Set(state.notifiedIds);
-      for (const ticket of tickets) {
-        if (stopped) return;
-        if (!Number.isFinite(ticket.createdAt) || ticket.createdAt <= 0) {
-          throw new BotSetupError('Um ticket retornou sem data de criação válida. O monitor repetirá a consulta sem avançar o controle.');
-        }
-        if (ticket.createdAt < state.startedAt || notified.has(ticket.id) || !ticket.assignees.some((user) => allowed.has(user.id))) continue;
-        await sendNotification(ticket);
-        notified.add(ticket.id);
-        state.notifiedIds.push(ticket.id);
-        // Só confirma o aviso depois do retorno de channel.send().
-        await store.write(state);
-      }
-      state.lastScan = scanStarted;
-      await store.write(state);
-    })().finally(() => { inFlight = undefined; });
+      for (const ticket of tickets) await notify(ticket);
+      if (stopped) return;
+      const next = { ...state, lastScan: scanStarted };
+      await store.write(next);
+      state = next;
+    }).finally(() => { inFlight = undefined; });
     return inFlight;
   }
 
@@ -65,12 +81,19 @@ export function createTicketMonitor({ store, scope, assigneeIds, fetchTickets, s
 
   return {
     initialize, poll,
+    processTask(taskId) {
+      return serial(async () => {
+        if (!state) throw new BotSetupError('Inicialize o monitor antes de processar eventos.');
+        if (state.notifiedIds.includes(taskId)) return;
+        await notify(await fetchTicket({ taskId, signal: controller.signal }));
+      });
+    },
     async start() { await initialize(); void cycle(); },
     async stop() {
       stopped = true;
       clearTimeout(timer);
       controller.abort();
-      try { await inFlight; } catch { /* Encerramento cancela a consulta em andamento. */ }
+      await operations;
     },
   };
 }
@@ -117,7 +140,8 @@ export async function startTicketNotifications(client, config) {
   const path = fileURLToPath(new URL(`../../.data/ticket-notifications-${config.listId}-${config.channelId}.json`, import.meta.url));
   let firstRead = true;
   const monitor = createTicketMonitor({
-    store: createNotificationStore(path), scope, assigneeIds: config.assigneeIds, intervalMs: config.intervalMs,
+    store: createNotificationStore(path), scope, intervalMs: config.intervalMs,
+    fetchTicket: (filters) => getTicket({ ...filters, listId: config.listId }),
     fetchTickets: async (filters) => {
       const tickets = await getAllTickets({ ...filters, listId: config.listId });
       if (firstRead) {
@@ -133,6 +157,6 @@ export async function startTicketNotifications(client, config) {
     onError: (error) => console.error(`[ERRO] Monitor de tickets: ${error instanceof ClickUpError ? error.message : describeError(error)}`),
   });
   await monitor.start();
-  console.log(`[INFO] Monitor de novos tickets ativo: canal ${config.channelId}, consulta a cada ${config.intervalMs / 1000}s.`);
+  console.log(`[INFO] Monitor de novos tickets ativo: canal ${config.channelId}, recuperação a cada ${config.intervalMs / 1000}s.`);
   return monitor;
 }

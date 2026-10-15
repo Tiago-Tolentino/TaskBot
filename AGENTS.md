@@ -5,7 +5,7 @@ Aplica-se a todo o projeto. Instruções explícitas do usuário têm prioridade
 
 ## Contexto e comunicação
 
-- O TasksBot é um bot do Discord integrado ao ClickUp para consultar tickets e avisar sobre novos tickets elegíveis.
+- O TasksBot é um bot do Discord integrado ao ClickUp para consultar tickets e avisar sobre novos tickets.
 - Responda ao usuário em português do Brasil. Mantenha mensagens do bot e documentação nesse idioma.
 - Antes de alterar uma funcionalidade, leia o código correspondente, seus testes e a seção relevante do `README.md`.
 - Faça mudanças focadas no pedido. Evite refatorações amplas e novas dependências sem necessidade.
@@ -34,7 +34,7 @@ Aplica-se a todo o projeto. Instruções explícitas do usuário têm prioridade
 - Não peça tokens pela conversa. Oriente o usuário a preenchê-los diretamente no `.env` local.
 - Não exiba o conteúdo completo de `.env`, variáveis de ambiente ou respostas de APIs que possam conter dados sensíveis.
 - Preserve `.env` existente. Novas variáveis devem ser documentadas em `.env.example` e no `README.md`, com valores vazios ou exemplos fictícios.
-- Mantenha `.env`, arquivos locais `.env.*`, `.data/`, `node_modules/` e logs fora do Git. A exceção é `.env.example`, que deve ser versionado sem credenciais.
+- Mantenha `.env`, arquivos locais `.env.*`, `.data/`, `.tools/`, `node_modules/` e logs fora do Git. A exceção é `.env.example`, que deve ser versionado sem credenciais.
 - Configure IDs de canais, listas, responsáveis e vínculos ClickUp → Discord por variáveis de ambiente. Use IDs fictícios nos testes e exemplos.
 - Trate IDs como strings, especialmente os IDs do Discord, para preservar sua precisão.
 - Antes de publicar, confira os arquivos preparados e o diff para evitar o envio de credenciais, dados de tickets e estado local. Se encontrar um segredo, interrompa a publicação e informe o problema sem reproduzir seu valor.
@@ -51,7 +51,10 @@ Estas regras descrevem o funcionamento atual. Altere-as quando o pedido do usuá
 - Apenas quem executou a pesquisa pode navegar pelos resultados. Preserve a expiração dos botões e as mensagens de erro compreensíveis.
 - `/help` usa o registro compartilhado de comandos. Ao adicionar um comando, inclua-o em `src/commands/index.js` e forneça uma descrição útil.
 - O registro dos comandos deve preservar comandos existentes que não pertencem a esta alteração.
-- O monitor considera tickets criados desde sua primeira ativação, atribuídos a pelo menos um responsável configurado, inclusive quando a atribuição ocorre depois da criação.
+- Os avisos automáticos abrangem qualquer ticket novo, inclusive sem responsável. O filtro de responsável continua disponível apenas na pesquisa manual com `/ticket`.
+- O webhook recebe `taskCreated` da lista configurada, valida assinatura sobre o corpo original e persiste o evento antes da confirmação HTTP. Preserve a fila e a deduplicação compartilhada com a recuperação a cada 10 minutos.
+- O túnel local deve expor somente o receptor do webhook. Preserve seu gerenciamento e encerramento junto com o bot, sem repassar tokens ao processo do túnel.
+- Preserve o marco `allTicketsSince` do estado: ele impede avisos retroativos ao migrar da antiga regra com filtro de responsáveis. O segredo do webhook fica somente em `.data/`.
 - Preserve a recuperação após reinício, o controle de tickets já avisados, os limites de tempo das consultas e o cancelamento no encerramento.
 - Preserve o estado em `.data/`. Não apague, reinicie nem substitua esse estado para facilitar testes; use armazenamento temporário e simulado.
 - Menções automáticas devem se limitar aos responsáveis atribuídos que tenham vínculo configurado com o Discord. Texto vindo do ClickUp nunca deve habilitar menções a `@everyone`, cargos ou usuários arbitrários.

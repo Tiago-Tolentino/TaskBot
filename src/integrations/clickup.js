@@ -10,22 +10,24 @@ function validateListId(listId) {
   }
 }
 
-async function requestClickUp(path, token, signal) {
+export async function requestClickUp(path, token, signal, { method = 'GET', body } = {}) {
   if (typeof token !== 'string' || !token.trim()) {
     throw new ClickUpError('Preencha CLICKUP_API_TOKEN no arquivo .env antes de validar a conexão.');
   }
 
   try {
     const response = await fetch(`https://api.clickup.com/api/v2${path}`, {
-      method: 'GET',
+      method,
       headers: {
         Authorization: token.trim(),
         Accept: 'application/json',
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
       },
       signal: signal
         ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
         : AbortSignal.timeout(10_000),
       redirect: 'error',
+      ...(body ? { body: JSON.stringify(body) } : {}),
     });
 
     if (response.status === 401) {
@@ -38,7 +40,7 @@ async function requestClickUp(path, token, signal) {
       throw new ClickUpError('Limite de requisições do ClickUp atingido. Aguarde e tente novamente.');
     }
     if (response.status === 404) {
-      throw new ClickUpError('Recurso do ClickUp não encontrado ou inacessível. Verifique o ID da lista e as permissões da conta.');
+      throw Object.assign(new ClickUpError('Recurso do ClickUp não encontrado ou inacessível. Verifique o ID da lista e as permissões da conta.'), { status: 404 });
     }
     if (!response.ok) {
       throw new ClickUpError(`Não foi possível validar a conexão com o ClickUp (HTTP ${response.status}).`);
@@ -111,15 +113,7 @@ export async function getAllTickets({
       for (const task of data.tasks) {
         if (status && normalizeSearch(task.status?.status) !== normalizeSearch(status)) continue;
         if (assigneeId && !task.assignees?.some((user) => String(user.id) === assigneeId)) continue;
-        tickets.set(task.id, {
-          id: task.id,
-          name: task.name,
-          status: task.status?.status || 'Sem status',
-          createdAt: Number(task.date_created) || 0,
-          assignees: (task.assignees || []).map((user) => ({ id: String(user.id), name: user.username || `Usuário ${user.id}` })),
-          summary: extractTicketSummary(task),
-          url: `https://app.clickup.com/t/${encodeURIComponent(task.id)}`,
-        });
+        tickets.set(task.id, normalizeTicket(task));
       }
       // Uma página curta com last_page=false ainda exige a próxima consulta.
       if (data.last_page === true) break;
@@ -154,4 +148,28 @@ export async function loadTicketFilterOptions({
     statuses: [...new Set(list.statuses.map((item) => item.status).filter((value) => typeof value === 'string' && value))],
     users: [...users.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR')),
   };
+}
+
+
+export function normalizeTicket(task) {
+  if (!task || typeof task.id !== 'string' || !task.id || typeof task.name !== 'string') {
+    throw new ClickUpError('O ClickUp retornou um ticket inválido.');
+  }
+  return {
+    id: task.id, name: task.name, status: task.status?.status || 'Sem status',
+    createdAt: Number(task.date_created) || 0,
+    assignees: (task.assignees || []).map((user) => ({ id: String(user.id), name: user.username || `Usuário ${user.id}` })),
+    summary: extractTicketSummary(task), url: `https://app.clickup.com/t/${encodeURIComponent(task.id)}`,
+  };
+}
+
+export async function getTicket({ taskId, listId = process.env.CLICKUP_TICKETS_LIST_ID, token = process.env.CLICKUP_API_TOKEN, signal } = {}) {
+  validateListId(listId);
+  if (typeof taskId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(taskId)) throw new ClickUpError('ID de ticket inválido.');
+  let task;
+  try { task = await requestClickUp(`/task/${encodeURIComponent(taskId)}`, token, signal); }
+  catch (error) { if (error.status === 404) return null; throw error; }
+  // O webhook já está limitado à lista; confirme também a lista principal do recurso.
+  if (String(task?.list?.id) !== listId) return null;
+  return normalizeTicket(task);
 }

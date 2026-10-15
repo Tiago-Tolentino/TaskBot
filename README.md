@@ -1,6 +1,6 @@
 # TasksBot
 
-Bot para Discord desenvolvido em JavaScript com Node.js e `discord.js`, integrado ao ClickUp para consultar tickets de suporte e enviar avisos de novas atribuições elegíveis.
+Bot para Discord desenvolvido em JavaScript com Node.js e `discord.js`, integrado ao ClickUp para consultar tickets de suporte e enviar avisos de novos tickets.
 
 O projeto atende a lista **Tickets** do space **Suporte B2C**. Os IDs da lista, do workspace, dos canais e dos usuários são definidos localmente por variáveis de ambiente.
 
@@ -12,7 +12,8 @@ O projeto atende a lista **Tickets** do space **Suporte B2C**. Os IDs da lista, 
 - Sugestões dos status da lista e dos usuários do workspace enquanto você digita.
 - Resultados em mensagens com título, status, responsáveis, resumo e link, navegáveis por botões.
 - Consulta de todas as páginas da API, incluindo tickets concluídos, arquivados e subtarefas.
-- Avisos automáticos de novos tickets atribuídos aos responsáveis configurados.
+- Avisos de qualquer ticket novo, inclusive sem responsável, recebidos por webhook com túnel local.
+- Consulta de recuperação a cada 10 minutos e ao iniciar, para cobrir falhas de entrega.
 - Menções aos usuários do Discord vinculados aos responsáveis do ClickUp.
 - Controle local dos avisos enviados para evitar repetições nas consultas e nos reinícios normais.
 
@@ -25,6 +26,7 @@ O projeto atende a lista **Tickets** do space **Suporte B2C**. Os IDs da lista, 
 - **dotenv 18.0.8** para carregar a configuração local.
 - **API do ClickUp**, acessada pelo `fetch` nativo do Node.js.
 - **Executor de testes nativo do Node.js**.
+- **cloudflared**, instalado localmente, para receber webhooks por um túnel HTTPS.
 
 As dependências estão fixadas no [package.json](package.json), com instalação reproduzível pelo [package-lock.json](package-lock.json).
 
@@ -32,6 +34,7 @@ As dependências estão fixadas no [package.json](package.json), com instalaçã
 
 ```text
 discord-bot/
+├── AGENTS.md                  # Orientações para agentes de programação
 ├── README.md
 ├── src/
 │   ├── index.js                 # Inicialização e encerramento
@@ -41,7 +44,8 @@ discord-bot/
 │   ├── integrations/            # Cliente da API do ClickUp
 │   └── services/                # Filtros, respostas e avisos
 ├── scripts/
-│   └── check-clickup.js         # Validação manual da autenticação
+│   ├── check-clickup.js         # Validação manual da autenticação
+│   └── install-tunnel.js        # Instalação local do cloudflared
 ├── test/                       # Testes automatizados
 ├── .env.example                # Modelo de configuração
 ├── .gitignore
@@ -49,7 +53,7 @@ discord-bot/
 └── package-lock.json
 ```
 
-O arquivo `.env`, o diretório `node_modules/` e o estado de execução em `.data/` são locais e estão ignorados pelo Git.
+O arquivo `.env`, os diretórios `node_modules/` e `.tools/` e o estado de execução em `.data/` são locais e estão ignorados pelo Git.
 
 ## Instalação
 
@@ -82,9 +86,12 @@ CLICKUP_WORKSPACE_ID=
 
 TICKET_NOTIFICATIONS_ENABLED=false
 TICKET_NOTIFICATION_CHANNEL_ID=
-TICKET_NOTIFICATION_ASSIGNEE_IDS=
-TICKET_NOTIFICATION_INTERVAL_SECONDS=30
+TICKET_NOTIFICATION_INTERVAL_SECONDS=600
 TICKET_NOTIFICATION_DISCORD_USER_MAP={}
+
+CLICKUP_WEBHOOK_ENABLED=false
+CLICKUP_WEBHOOK_PORT=3000
+CLOUDFLARED_PATH=
 ```
 
 | Variável | Finalidade |
@@ -93,12 +100,14 @@ TICKET_NOTIFICATION_DISCORD_USER_MAP={}
 | `CHANNEL_ID` | ID de um canal acessível ao bot, usado para identificar o servidor onde os comandos serão registrados. Obrigatório para iniciar. |
 | `CLICKUP_API_TOKEN` | Token do ClickUp, necessário para consultar tickets, carregar sugestões e executar o monitor. |
 | `CLICKUP_TICKETS_LIST_ID` | ID da lista Tickets a ser consultada. |
-| `CLICKUP_WORKSPACE_ID` | ID do workspace usado nas sugestões e na validação dos responsáveis. |
+| `CLICKUP_WORKSPACE_ID` | ID do workspace usado nas sugestões de responsáveis e no cadastro do webhook. |
 | `TICKET_NOTIFICATIONS_ENABLED` | Ativa o monitor quando definido como `true`. Padrão: desativado. |
 | `TICKET_NOTIFICATION_CHANNEL_ID` | ID do canal que receberá os avisos automáticos. |
-| `TICKET_NOTIFICATION_ASSIGNEE_IDS` | IDs dos responsáveis do ClickUp que devem gerar avisos, separados por vírgula. |
-| `TICKET_NOTIFICATION_INTERVAL_SECONDS` | Intervalo entre verificações: inteiro de 30 a 3600 segundos. Padrão: `30`. |
-| `TICKET_NOTIFICATION_DISCORD_USER_MAP` | Objeto JSON que associa IDs do ClickUp a IDs do Discord para as menções. |
+| `TICKET_NOTIFICATION_INTERVAL_SECONDS` | Intervalo entre consultas de recuperação: inteiro de 30 a 3600 segundos. Padrão: `600` (10 minutos). |
+| `TICKET_NOTIFICATION_DISCORD_USER_MAP` | Objeto JSON que associa IDs do ClickUp a IDs do Discord para as menções. Não limita quais tickets geram avisos. |
+| `CLICKUP_WEBHOOK_ENABLED` | Ativa o servidor de webhook, o túnel local e o cadastro automático no ClickUp quando definido como `true`. Padrão: desativado. |
+| `CLICKUP_WEBHOOK_PORT` | Porta HTTP local do receptor, de 1024 a 65535. Padrão: `3000`; escuta somente em `127.0.0.1`. |
+| `CLOUDFLARED_PATH` | Caminho opcional do executável. Se vazio, procura `.tools/cloudflared` e depois `cloudflared` no PATH. |
 
 Variáveis já definidas no ambiente do terminal têm prioridade sobre o `.env`. Reinicie o bot depois de alterar a configuração.
 
@@ -121,7 +130,7 @@ Nos canais utilizados, conceda **Visualizar canal** e **Enviar mensagens**. No c
 3. Informe o ID da lista Tickets em `CLICKUP_TICKETS_LIST_ID` e o ID do workspace em `CLICKUP_WORKSPACE_ID`.
 4. Confirme que a conta do token tem acesso à lista e aos tickets que deseja consultar.
 
-Os IDs dos responsáveis são do **ClickUp**. Para marcar alguém no Discord, configure separadamente o ID correspondente do **Discord**.
+O filtro de responsável do `/ticket` usa IDs do **ClickUp**. Para marcar alguém nos avisos, configure separadamente o ID correspondente do **Discord**.
 
 Valide a autenticação:
 
@@ -174,51 +183,74 @@ Use **Anterior** e **Próximo** para navegar. Apenas quem executou a pesquisa po
 
 A consulta inclui tickets abertos, concluídos, arquivados, subtarefas e tickets vinculados a múltiplas listas. Resultados são deduplicados pelo ID e limitados ao acesso permitido ao token. Falhas na consulta geram uma mensagem de erro, sem apresentar resultados parciais como completos.
 
-## Avisos automáticos
+## Avisos automáticos com webhook e túnel local
 
-Para habilitar o monitor, configure no `.env`:
+O bot avisa sobre **qualquer ticket novo na lista configurada**, inclusive sem responsável. Não existe filtro de responsável para os avisos. O filtro opcional do comando `/ticket` continua disponível para pesquisas manuais.
 
-- `TICKET_NOTIFICATIONS_ENABLED=true`;
-- o canal de destino em `TICKET_NOTIFICATION_CHANNEL_ID`;
-- os IDs dos responsáveis acompanhados em `TICKET_NOTIFICATION_ASSIGNEE_IDS`;
-- opcionalmente, as associações para menções em `TICKET_NOTIFICATION_DISCORD_USER_MAP`.
+### Ativar
 
-Exemplo com **IDs fictícios**:
+1. Instale o executável local do túnel:
+
+   ```sh
+   npm run tunnel:install
+   ```
+
+   O instalador suporta macOS e Linux, nas arquiteturas ARM64 e x64. Baixa uma release oficial da Cloudflare, confere o SHA-256 publicado no GitHub e grava em `.tools/cloudflared`, ignorado pelo Git. Como alternativa, instale `cloudflared` pelo gerenciador do seu sistema e configure `CLOUDFLARED_PATH` se necessário.
+
+2. Configure no `.env`:
+
+   ```dotenv
+   TICKET_NOTIFICATIONS_ENABLED=true
+   TICKET_NOTIFICATION_CHANNEL_ID=
+   TICKET_NOTIFICATION_INTERVAL_SECONDS=600
+   CLICKUP_WEBHOOK_ENABLED=true
+   CLICKUP_WEBHOOK_PORT=3000
+   CLOUDFLARED_PATH=
+   ```
+
+   Preencha o canal e mantenha as credenciais, `CLICKUP_TICKETS_LIST_ID` e `CLICKUP_WORKSPACE_ID` configurados.
+
+3. Execute `npm start`. O bot inicia a recuperação, abre o receptor HTTP local, inicia o túnel e cadastra no ClickUp um webhook para `taskCreated`, limitado à lista Tickets. Aguarde o log `Webhook ClickUp ativo via túnel local`.
+
+O [Quick Tunnel da Cloudflare](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/) fornece um endereço HTTPS temporário, sem exigir conta ou domínio. A cada nova execução, o endereço pode mudar; o bot atualiza o mesmo webhook salvo em `.data/`. Não é necessário copiar a URL manualmente para o ClickUp.
+
+O computador, o bot, a conexão de rede e o túnel precisam permanecer ativos. Quick Tunnels são voltados ao desenvolvimento e não têm garantia de disponibilidade. Se o processo do túnel encerrar, o bot tenta recriá-lo após 60 segundos. O encerramento normal do bot também encerra seu túnel.
+
+### Recepção e recuperação
+
+1. O ClickUp envia o evento de criação ao endpoint `/webhooks/clickup`.
+2. O bot valida a assinatura HMAC-SHA256 sobre o corpo original e o ID do webhook. O receptor não publica arquivos nem oferece outras rotas.
+3. O ID do ticket é persistido em uma fila local antes da resposta de aceitação. O envio ao Discord acontece em segundo plano.
+4. O bot consulta os detalhes daquele ticket e aplica o período de acompanhamento e o histórico de avisos. Tickets já avisados não geram um novo aviso.
+5. A consulta de recuperação busca todas as páginas necessárias ao iniciar e, por padrão, a cada **10 minutos após a consulta anterior terminar**. Ela recupera tickets que não chegaram por webhook, inclusive durante períodos offline. A saúde do webhook também é verificada a cada 10 minutos; se necessário, o cadastro é reativado.
+
+Falhas no processamento da fila são tentadas novamente após 30 segundos. O webhook e a recuperação compartilham o controle de envio para evitar corridas e duplicações. Um ticket removido ou fora da lista principal configurada é descartado na consulta individual; a recuperação periódica também considera tickets vinculados a múltiplas listas.
+
+O acompanhamento começa na primeira ativação. Ao migrar da versão com filtro de responsáveis, o bot mantém o histórico e registra o início da nova regra: tickets anteriores a essa migração que não tinham sido avisados não geram uma enxurrada de avisos retroativos. Depois disso, reinícios preservam esse marco e recuperam tickets novos do período offline. Reabrir um ticket antigo não o transforma em um ticket novo.
+
+Cada aviso contém título, status, responsáveis, trecho do resumo e link. Se a consulta ocorrer antes de o responsável ser atribuído, o aviso pode mostrar `Não atribuído`; uma atribuição posterior não gera um segundo aviso.
+
+### Menções
+
+As menções continuam opcionais. Exemplo com **IDs fictícios**:
 
 ```dotenv
-TICKET_NOTIFICATION_ASSIGNEE_IDS=12345678,87654321
 TICKET_NOTIFICATION_DISCORD_USER_MAP={"12345678":"123456789012345678"}
 ```
 
-As chaves do objeto são IDs do ClickUp; os valores são IDs do Discord. **Mantenha os IDs entre aspas** no JSON para preservar sua precisão.
+As chaves são IDs do ClickUp e os valores são IDs do Discord. Mantenha ambos entre aspas. O usuário só é mencionado se estiver atribuído ao ticket no momento da consulta. Todos os outros tickets também geram avisos. O texto dos tickets não autoriza menções a cargos, `@everyone` ou outros usuários.
 
-O monitor verifica os tickets a cada 30 segundos por padrão. O intervalo é contado após concluir a consulta anterior. O funcionamento segue estas regras:
+### Estado local e desativação
 
-1. Acompanha tickets **criados a partir da primeira ativação** do monitor para a combinação de lista e canal.
-2. Envia um aviso quando ao menos um dos responsáveis configurados está atribuído ao ticket.
-3. Se um ticket novo receber um responsável acompanhado depois de criado, também poderá gerar o aviso.
-4. Ter vários responsáveis acompanhados continua gerando um único aviso por ticket.
-5. Tickets anteriores à ativação não geram avisos, mesmo se forem reabertos ou reatribuídos.
+Preserve todo o diretório `.data/`, incluindo:
 
-Cada aviso contém título, status, responsáveis, trecho do resumo e link. Quando um responsável atribuído tem um ID do Discord mapeado, ele é mencionado uma vez no aviso. Somente esses usuários são autorizados nas menções; o texto do ticket não libera menções a outros usuários, cargos ou `@everyone`.
+- `ticket-notifications-<lista>-<canal>.json`: marcos de acompanhamento, checkpoint e IDs já avisados.
+- `clickup-webhook-<workspace>-<lista>-<canal>.json`: ID, endereço e **segredo do webhook**; não publique nem exiba seu conteúdo.
+- `webhook-inbox-<workspace>-<lista>-<canal>.json`: IDs dos tickets recebidos e ainda pendentes.
 
-O monitor usa consultas periódicas à API e não exige um endereço público para webhooks. O bot precisa permanecer em execução e conectado à rede.
+Esses arquivos são gravados com acesso restrito e estão ignorados pelo Git. Estado inválido não é apagado automaticamente. A confirmação do Discord e a gravação local continuam sendo operações separadas; o `nonce` estável reduz duplicações em uma interrupção abrupta entre elas.
 
-### Estado dos avisos
-
-O controle fica em:
-
-```text
-.data/ticket-notifications-<lista>-<canal>.json
-```
-
-O arquivo registra o início do acompanhamento, o último ponto consultado e os IDs dos tickets já avisados. **Preserve `.data/` ao reiniciar ou transferir a execução do bot.** Esse estado é local e não deve ser publicado no GitHub.
-
-Com o mesmo estado, o monitor recupera tickets elegíveis criados durante o período offline e evita repetir avisos já confirmados. Falhas de rede ou envio são tentadas novamente na verificação seguinte. Um estado inválido não é apagado automaticamente.
-
-A confirmação do Discord e a gravação local são operações separadas. O bot grava cada aviso confirmado e usa um `nonce` estável para reduzir duplicações; uma interrupção abrupta entre essas operações ainda pode exigir conferência manual.
-
-Para desativar o monitor, defina `TICKET_NOTIFICATIONS_ENABLED=false` e reinicie o bot.
+Para usar apenas a consulta de recuperação, defina `CLICKUP_WEBHOOK_ENABLED=false` e reinicie. Para desativar todos os avisos, defina também `TICKET_NOTIFICATIONS_ENABLED=false`. O cadastro remoto é preservado e atualizado/reativado quando o webhook voltar a ser habilitado.
 
 ## Testes e verificações
 
@@ -232,14 +264,15 @@ npm test
 | Comando npm | Finalidade |
 | --- | --- |
 | `npm ci` | Instala as dependências conforme o arquivo de lock. |
-| `npm start` | Inicia o bot e as funcionalidades habilitadas. |
+| `npm start` | Inicia o bot, o monitor e o túnel/webhook quando habilitados. |
+| `npm run tunnel:install` | Instala o executável oficial do túnel em `.tools/`, com verificação de SHA-256. |
 | `npm run check` | Verifica a sintaxe dos arquivos de execução. |
 | `npm test` | Executa os testes automatizados locais. |
 | `npm run clickup:check` | Valida a autenticação na API real do ClickUp. |
 
-Os testes locais simulam APIs, canais e interações. Cobrem configuração, comandos, paginação, filtros, sugestões, resumos, navegação, menções, persistência e falhas do monitor. Eles não enviam mensagens reais nem modificam tickets no ClickUp.
+Os testes locais simulam APIs, canais e interações. Cobrem configuração, comandos, paginação, filtros, sugestões, resumos, navegação, menções, persistência, assinaturas de webhook, fila, concorrência e falhas do monitor. Os testes HTTP usam somente um servidor local simulado. Eles não enviam mensagens reais nem modificam tickets no ClickUp.
 
-Para uma validação real, execute `/test` e `/ticket` no Discord. Para testar o monitor, crie um ticket novo após a ativação, atribua a um responsável acompanhado e confira o aviso no canal e o log de confirmação com o ID da mensagem.
+Para uma validação real, execute `/test` e `/ticket` no Discord. Para testar o monitor, crie um ticket novo após a ativação, com ou sem responsável, e confira o aviso no canal e o log de confirmação com o ID da mensagem.
 
 ## Organização do código
 
@@ -262,9 +295,10 @@ Toda comunicação com o Discord passa pelo `discord.js`. A integração com o C
 | As sugestões não aparecem | Confira token, lista e workspace do ClickUp. As opções ficam em cache por até 5 minutos; uma consulta lenta pode prepará-las para a próxima tentativa. |
 | A pesquisa não encontra tickets | Verifique os filtros, a lista configurada e o acesso da conta do token. |
 | Os botões pararam | A navegação expira após 10 minutos ou ao reiniciar o bot. Execute `/ticket` novamente. |
-| O monitor não avisa | Confira a ativação, o canal, as permissões, os IDs dos responsáveis e se o ticket foi criado desde a primeira ativação. |
+| O monitor não avisa | Confira a ativação, o canal, as permissões e se o ticket foi criado desde o início do acompanhamento da regra atual. |
 | A menção não notifica a pessoa | Confira o vínculo de IDs, a atribuição no ticket, o acesso ao canal e as configurações de notificações do usuário. |
 | O ClickUp limita as requisições | Aguarde antes de repetir a pesquisa e mantenha o intervalo do monitor dentro da configuração permitida. |
+| O túnel ou webhook não conecta | Confira a rede, `npm run tunnel:install`, a porta local, o workspace e o acesso da conta do token. A recuperação de 10 minutos continua ativa se o túnel falhar. |
 | O estado dos avisos está inválido | Verifique o arquivo em `.data/` e restaure um backup válido antes de reativar o monitor. |
 
 Cada requisição ao ClickUp tem limite de 10 segundos, e uma consulta completa de tickets tem limite de 2 minutos. Alterações simultâneas na lista podem afetar a paginação, pois a consulta não é uma cópia congelada dos dados.
@@ -273,6 +307,6 @@ Cada requisição ao ClickUp tem limite de 10 segundos, e uma consulta completa 
 
 O repositório deve incluir o código, os arquivos `package.json` e `package-lock.json`, o modelo `.env.example` e esta documentação.
 
-O [.gitignore](.gitignore) exclui `.env`, arquivos locais `.env.*` (preservando `.env.example`), `node_modules/`, `.data/`, cobertura de testes e logs de depuração do npm. Confira os arquivos preparados para o commit com `git status`.
+O [.gitignore](.gitignore) exclui `.env`, arquivos locais `.env.*` (preservando `.env.example`), `node_modules/`, `.data/`, `.tools/`, cobertura de testes e logs de depuração do npm. Confira os arquivos preparados para o commit com `git status`.
 
 Preencha tokens e IDs da sua instalação somente no `.env` local. Os exemplos deste README usam valores vazios ou fictícios.
