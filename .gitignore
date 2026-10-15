@@ -11,3 +11,4 @@ coverage/
 
 # Estado persistente de execução
 .data/
+.tools/

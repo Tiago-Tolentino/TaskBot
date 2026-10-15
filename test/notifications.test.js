@@ -13,7 +13,7 @@ function fixture(overrides = {}) {
   const sent = [];
   const store = { read: async () => structuredClone(persisted), write: async (state) => { persisted = structuredClone(state); } };
   const settings = {
-    store, scope: 'list:channel', assigneeIds: ['11', '22', '33'], now: () => 1000,
+    store, scope: 'list:channel', now: () => 1000,
     fetchTickets: async () => [], sendNotification: async (ticket) => sent.push(ticket.id), ...overrides,
   };
   return { monitor: createTicketMonitor(settings), settings, store, sent, state: () => persisted };
@@ -24,16 +24,15 @@ const ticket = (id, assignees = ['11'], createdAt = 1500) => ({
   url: `https://app.clickup.com/t/${id}`, assignees: assignees.map((id) => ({ id, name: `Pessoa ${id}` })),
 });
 
-test('avisos são opcionais e configuração valida canal, usuários e intervalo', () => {
+test('avisos são opcionais e configuração valida canal e intervalo', () => {
   assert.equal(readNotificationConfig({}), null);
   const env = {
     TICKET_NOTIFICATIONS_ENABLED: 'true', TICKET_NOTIFICATION_CHANNEL_ID: '234567890123456789',
-    TICKET_NOTIFICATION_ASSIGNEE_IDS: '11,22,11,33', CLICKUP_API_TOKEN: 'pk_ficticio', CLICKUP_TICKETS_LIST_ID: '12345',
+    CLICKUP_API_TOKEN: 'pk_ficticio', CLICKUP_TICKETS_LIST_ID: '12345',
   };
-  assert.deepEqual(readNotificationConfig(env).assigneeIds, ['11', '22', '33']);
-  assert.equal(readNotificationConfig(env).intervalMs, 30000);
+  assert.equal(readNotificationConfig(env).intervalMs, 600000);
   for (const invalid of [
-    { TICKET_NOTIFICATION_CHANNEL_ID: 'geral' }, { TICKET_NOTIFICATION_ASSIGNEE_IDS: 'Tiago' },
+    { TICKET_NOTIFICATION_CHANNEL_ID: 'geral' },
     { TICKET_NOTIFICATION_INTERVAL_SECONDS: '1' }, { TICKET_NOTIFICATION_INTERVAL_SECONDS: 'abc' }, { CLICKUP_API_TOKEN: '' },
   ]) assert.throws(() => readNotificationConfig({ ...env, ...invalid }));
 });
@@ -51,18 +50,18 @@ test('estado é salvo atomicamente e arquivo corrompido não vira estado novo', 
   assert.equal(await readFile(path, 'utf8'), '{inválido');
 });
 
-test('só avisa novos tickets com ao menos um responsável permitido; múltiplos geram um aviso', async () => {
+test('avisa todos os tickets novos, com qualquer responsável, uma única vez', async () => {
   const f = fixture({ fetchTickets: async () => [ticket('antigo', ['11'], 999), ticket('novo'), ticket('outro', ['44']), ticket('multiplo', ['11', '22', '33'])] });
   await f.monitor.initialize(); await f.monitor.poll(); await f.monitor.poll();
-  assert.deepEqual(f.sent, ['novo', 'multiplo']);
-  assert.deepEqual(f.state().notifiedIds, ['novo', 'multiplo']);
+  assert.deepEqual(f.sent, ['novo', 'outro', 'multiplo']);
+  assert.deepEqual(f.state().notifiedIds, ['novo', 'outro', 'multiplo']);
 });
 
-test('ticket novo sem responsável pode avisar quando for atribuído mais tarde', async () => {
+test('ticket novo sem responsável avisa imediatamente e atribuição posterior não repete', async () => {
   let assigned = [];
   const f = fixture({ fetchTickets: async () => [ticket('a', assigned)] });
   await f.monitor.initialize(); await f.monitor.poll();
-  assert.equal(f.sent.length, 0);
+  assert.deepEqual(f.sent, ['a']);
   assigned = ['22']; await f.monitor.poll(); await f.monitor.poll();
   assert.deepEqual(f.sent, ['a']);
 });
@@ -107,9 +106,10 @@ test('consultas simultâneas são compartilhadas e interrupção cancela a requi
   } });
   await f.monitor.initialize();
   const first = f.monitor.poll(); const second = f.monitor.poll();
-  assert.equal(first, second); assert.equal(queries, 1);
+  assert.equal(first, second); await Promise.resolve(); assert.equal(queries, 1);
   release([]); await first;
   const pending = f.monitor.poll();
+  await Promise.resolve();
   await f.monitor.stop(); await assert.rejects(pending);
   await f.monitor.poll(); assert.equal(queries, 2);
 });
@@ -152,7 +152,7 @@ test('canal inexistente ou sem permissão impede ativação antes de enviar avis
 test('mapeamento exige IDs entre aspas e mantém a precisão do ID Discord', () => {
   const env = {
     TICKET_NOTIFICATIONS_ENABLED: 'true', TICKET_NOTIFICATION_CHANNEL_ID: '234567890123456789',
-    TICKET_NOTIFICATION_ASSIGNEE_IDS: '12345678', CLICKUP_API_TOKEN: 'pk_ficticio', CLICKUP_TICKETS_LIST_ID: '12345',
+    CLICKUP_API_TOKEN: 'pk_ficticio', CLICKUP_TICKETS_LIST_ID: '12345',
     TICKET_NOTIFICATION_DISCORD_USER_MAP: '{"12345678":"345678901234567890"}',
   };
   assert.deepEqual(readNotificationConfig(env).discordUserMap, { '12345678': '345678901234567890' });

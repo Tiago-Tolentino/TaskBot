@@ -21,13 +21,9 @@ export function readConfig(env = process.env) {
 export function readNotificationConfig(env = process.env) {
   if (env.TICKET_NOTIFICATIONS_ENABLED !== 'true') return null;
   const channelId = env.TICKET_NOTIFICATION_CHANNEL_ID?.trim();
-  const assigneeIds = [...new Set((env.TICKET_NOTIFICATION_ASSIGNEE_IDS || '').split(',').map((id) => id.trim()).filter(Boolean))];
-  const intervalSeconds = Number(env.TICKET_NOTIFICATION_INTERVAL_SECONDS || 30);
+  const intervalSeconds = Number(env.TICKET_NOTIFICATION_INTERVAL_SECONDS || 600);
   if (!channelId || !/^[1-9]\d{16,19}$/.test(channelId)) {
     throw new BotSetupError('Configure TICKET_NOTIFICATION_CHANNEL_ID com o ID do canal de avisos.');
-  }
-  if (!assigneeIds.length || assigneeIds.some((id) => !/^\d+$/.test(id))) {
-    throw new BotSetupError('Configure TICKET_NOTIFICATION_ASSIGNEE_IDS com os IDs confirmados dos responsáveis no ClickUp.');
   }
   if (!Number.isInteger(intervalSeconds) || intervalSeconds < 30 || intervalSeconds > 3600) {
     throw new BotSetupError('TICKET_NOTIFICATION_INTERVAL_SECONDS deve ser um inteiro entre 30 e 3600.');
@@ -45,5 +41,15 @@ export function readNotificationConfig(env = process.env) {
   } catch {
     throw new BotSetupError('TICKET_NOTIFICATION_DISCORD_USER_MAP deve ser um objeto JSON com IDs do ClickUp e IDs do Discord entre aspas.');
   }
-  return { channelId, assigneeIds, intervalMs: intervalSeconds * 1000, listId: env.CLICKUP_TICKETS_LIST_ID, discordUserMap };
+  return { channelId, intervalMs: intervalSeconds * 1000, listId: env.CLICKUP_TICKETS_LIST_ID, discordUserMap };
+}
+
+
+export function readWebhookConfig(env = process.env) {
+  if (env.CLICKUP_WEBHOOK_ENABLED !== 'true') return null;
+  if (env.TICKET_NOTIFICATIONS_ENABLED !== 'true') throw new BotSetupError('Ative TICKET_NOTIFICATIONS_ENABLED para usar o webhook.');
+  if (!/^\d+$/.test(env.CLICKUP_WORKSPACE_ID || '')) throw new BotSetupError('Configure CLICKUP_WORKSPACE_ID para registrar o webhook.');
+  const port = Number(env.CLICKUP_WEBHOOK_PORT || 3000);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new BotSetupError('CLICKUP_WEBHOOK_PORT deve ser um inteiro entre 1024 e 65535.');
+  return { port, workspaceId: env.CLICKUP_WORKSPACE_ID, binary: env.CLOUDFLARED_PATH?.trim() || undefined };
 }

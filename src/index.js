@@ -1,7 +1,8 @@
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import { Client, Events, GatewayIntentBits } from 'discord.js';
-import { readConfig, readNotificationConfig } from './config.js';
+import { readConfig, readNotificationConfig, readWebhookConfig } from './config.js';
+import { startClickUpWebhook } from './services/clickupWebhook.js';
 import { startTicketNotifications } from './services/ticketNotifications.js';
 import { registerReadyEvent } from './events/ready.js';
 import { registerInteractionEvent } from './events/interactionCreate.js';
@@ -14,6 +15,7 @@ let client;
 let startupTimer;
 let stopping = false;
 let notificationMonitor;
+let webhookService;
 
 async function stop(exitCode = 0) {
   if (stopping) return;
@@ -21,6 +23,7 @@ async function stop(exitCode = 0) {
   clearTimeout(startupTimer);
   process.exitCode = exitCode;
   try {
+    await webhookService?.stop();
     await notificationMonitor?.stop();
     await client?.destroy();
   } catch {
@@ -45,13 +48,16 @@ async function main() {
   console.log('[INFO] Iniciando bot...');
   const { token, channelId } = readConfig();
   const notificationConfig = readNotificationConfig();
+  const webhookConfig = readWebhookConfig();
 
   client = new Client({ intents: [GatewayIntentBits.Guilds] });
   registerInteractionEvent(client);
   registerReadyEvent(client, channelId, fail, () => clearTimeout(startupTimer), async (readyClient) => {
     if (!notificationConfig || stopping) return;
     notificationMonitor = await startTicketNotifications(readyClient, notificationConfig);
-    if (stopping) await notificationMonitor.stop();
+    if (stopping) { await notificationMonitor.stop(); return; }
+    if (webhookConfig) webhookService = await startClickUpWebhook(notificationMonitor, webhookConfig, notificationConfig);
+    if (stopping) await webhookService?.stop();
   });
   client.on(Events.Error, (error) => console.error(`[ERRO] ${describeError(error)}`));
   client.on(Events.ShardError, (error) => console.error(`[ERRO] ${describeError(error)}`));
