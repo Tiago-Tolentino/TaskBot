@@ -1,0 +1,13 @@
+# Dependências e arquivos gerados
+node_modules/
+coverage/
+*.log
+.DS_Store
+
+# Credenciais locais; publicar somente o modelo vazio
+.env
+.env.*
+!.env.example
+
+# Estado persistente de execução
+.data/
