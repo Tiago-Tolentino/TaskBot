@@ -110,11 +110,11 @@ CLOUDFLARED_PATH=
 | `CLICKUP_WORKSPACE_ID` | ID do workspace usado nas sugestões de responsáveis e no cadastro do webhook. |
 | `TICKET_NOTIFICATIONS_ENABLED` | Ativa o monitor quando definido como `true`. Padrão: desativado. |
 | `TICKET_NOTIFICATION_CHANNEL_ID` | ID do canal que receberá os avisos automáticos. |
-| `TICKET_NOTIFICATION_INTERVAL_SECONDS` | Intervalo entre consultas de recuperação: inteiro de 30 a 3600 segundos. Padrão: `600` (10 minutos). |
+| `TICKET_NOTIFICATION_INTERVAL_SECONDS` | Intervalo entre consultas de recuperação de tickets e comentários: inteiro de 30 a 3600 segundos. Padrão: `600` (10 minutos). |
 | `TICKET_NOTIFICATION_DISCORD_USER_MAP` | Objeto JSON que associa IDs do ClickUp a IDs do Discord para menções e avisos privados de atribuição. Não limita quais tickets geram avisos. |
 | `TICKET_ASSIGNMENT_ASSIGNEE_IDS` | IDs do ClickUp autorizados no botão de atribuição, separados por vírgula. Vazio: nenhuma atribuição disponível. Não limita os avisos automáticos. |
 | `TICKET_ASSIGNMENT_DM_ENABLED` | Envia um privado aos responsáveis vinculados no primeiro aviso de um ticket novo ou após uma nova atribuição pelo botão. Padrão: `false`. |
-| `TICKET_COMMENT_DM_ENABLED` | Envia comentários novos da Activity no privado dos responsáveis vinculados. Requer webhook ativo. Padrão: `false`. |
+| `TICKET_COMMENT_DM_ENABLED` | Envia comentários novos da Activity no privado dos responsáveis vinculados, por webhook e recuperação periódica. Funciona também com webhook desativado. Padrão: `false`. |
 | `CLICKUP_WEBHOOK_ENABLED` | Ativa o servidor de webhook, o túnel local e o cadastro automático no ClickUp quando definido como `true`. Padrão: desativado. |
 | `CLICKUP_WEBHOOK_PORT` | Porta HTTP local do receptor, de 1024 a 65535. Padrão: `3000`; escuta somente em `127.0.0.1`. |
 | `CLOUDFLARED_PATH` | Caminho opcional do executável. Se vazio, procura `.tools/cloudflared` e depois `cloudflared` no PATH. |
@@ -277,15 +277,19 @@ Se o Discord bloquear mensagens diretas ou houver falha de entrega, a atribuiç�
 
 ### Mensagens da Activity no privado
 
-A [API de comentários do ClickUp](https://developer.clickup.com/docs/comments) permite acessar as mensagens publicadas na Activity. Com `TICKET_COMMENT_DM_ENABLED=true`, o webhook também assina `taskCommentPosted`, conforme os [eventos de comentários](https://developer.clickup.com/docs/webhooktaskpayloads).
+A [API de comentários do ClickUp](https://developer.clickup.com/docs/comments) permite acessar as mensagens publicadas na Activity. Com `TICKET_COMMENT_DM_ENABLED=true`, o bot inicia a recuperação de comentários ao conectar e, por padrão, a cada 10 minutos após a consulta anterior terminar. Quando o webhook está habilitado, também assina `taskCommentPosted`, conforme os [eventos de comentários](https://developer.clickup.com/docs/webhooktaskpayloads), para o envio imediato.
 
 O bot consulta os responsáveis atuais do ticket e envia uma cópia privada a cada Discord vinculado em `TICKET_NOTIFICATION_DISCORD_USER_MAP`. Isso também funciona em tickets antigos: o que precisa ser novo é o comentário. O autor do comentário não é excluído se também for um dos responsáveis. Quem não tem vínculo não recebe privado; não há encaminhamento dessas conversas ao canal público. A opção é independente de `TICKET_ASSIGNMENT_DM_ENABLED`.
 
-A mensagem mostra título e link do ticket, status, responsáveis, autor, data e conteúdo do comentário. Textos longos são divididos em partes, preservando o conteúdo. O botão abre o ticket no ClickUp. Somente os anexos daquele comentário são enviados, na primeira parte; os arquivos gerais do ticket não são reenviados. Valem os mesmos limites de tamanho, quantidade, hosts e tempo dos avisos de tickets, com links como alternativa. Anexos embutidos no comentário e anexos de e-mail disponibilizados pelo evento são considerados.
+O aviso da Activity mostra o comentário e seus anexos, sem os campos de status e responsáveis. O título e link do ticket, o autor e a data identificam a conversa. Textos longos são divididos em partes, preservando o conteúdo. O botão abre o ticket no ClickUp. Somente os anexos daquele comentário são enviados, na primeira parte; os arquivos gerais do ticket não são reenviados. Valem os mesmos limites de tamanho, quantidade, hosts e tempo dos avisos de tickets, com links como alternativa. Anexos embutidos no comentário e anexos de e-mail disponibilizados pelo evento são considerados.
 
 O evento é validado e gravado numa fila separada antes da confirmação HTTP. Eventos duplicados e reinícios preservam o controle por comentário, destinatário e parte enviada. Falhas transitórias são repetidas após 30 segundos sem repetir partes confirmadas. Se o Discord bloquear o privado, a falha é registrada e o envio aos demais responsáveis continua; esse bloqueio não é repetido automaticamente. Tickets removidos ou fora da lista principal configurada não são encaminhados.
 
-O acompanhamento começa quando a função é ativada pela primeira vez e não envia o histórico anterior. Comentários recebidos e pendentes são recuperados após reinícios. Esta função depende da entrega do webhook: a consulta de recuperação de 10 minutos continua voltada a novos tickets e não varre o histórico de comentários durante períodos em que o receptor estava offline. Não são enviados avisos para edições de comentários, reações ou mudanças de status. Respostas que o ClickUp disponibilizar como `taskCommentPosted` seguem o mesmo fluxo.
+A recuperação consulta os tickets dos responsáveis vinculados, incluindo concluídos, arquivados, subtarefas e tickets antigos, e remove IDs repetidos entre responsáveis. Não depende da data de criação ou atualização do ticket. Percorre as [páginas de comentários usando data e ID](https://developer.clickup.com/docs/task-comments-pagination) e consulta as [respostas de threads](https://developer.clickup.com/reference/getthreadedcomments), mesmo quando o comentário pai é antigo. As consultas de comentários são espaçadas para deixar margem para comandos e webhooks; o custo aumenta conforme a quantidade de tickets e de páginas do histórico.
+
+O marco inicial da primeira ativação é preservado, sem enviar o histórico anterior. O checkpoint de recuperação fica no mesmo estado da fila e só avança quando todos os tickets candidatos foram consultados e os comentários encontrados foram persistidos. A janela inclui uma sobreposição de um minuto. Falhas parciais preservam o checkpoint e não impedem o processamento dos outros tickets; a próxima consulta repete a busca sem repetir entregas confirmadas. Falhas no privado permanecem na fila de tentativas mesmo após o avanço do checkpoint.
+
+Reinícios recuperam os comentários do período offline desde o checkpoint anterior. Na atualização de uma instalação existente, a primeira recuperação parte do marco original da função e mantém os IDs já concluídos e o progresso dos envios pendentes. Webhook e recuperação usam a mesma fila e a mesma deduplicação por comentário, destinatário e parte. Funciona também com `CLICKUP_WEBHOOK_ENABLED=false`, mantendo `TICKET_COMMENT_DM_ENABLED=true`. Não são enviados novos avisos para edições de comentários, reações ou mudanças de status. Mensagens removidas ou inacessíveis na API não podem ser recuperadas.
 
 Para testar, publique uma nova mensagem na Activity de um ticket da lista configurada, com um responsável vinculado, e inclua um arquivo. Confirme a chegada no privado e o log `Comentário enviado no privado`.
 
@@ -316,11 +320,11 @@ Preserve todo o diretório `.data/`, incluindo:
 - `ticket-notifications-<lista>-<canal>.json`: marcos de acompanhamento, checkpoint e IDs já avisados.
 - `clickup-webhook-<workspace>-<lista>-<canal>.json`: ID, endereço e **segredo do webhook**; não publique nem exiba seu conteúdo.
 - `webhook-inbox-<workspace>-<lista>-<canal>.json`: IDs dos tickets recebidos e ainda pendentes.
-- `comment-notifications-<lista>-<canal>.json`: marco inicial, comentários pendentes (incluindo texto e metadados de anexos), destinatários/partes confirmados e IDs de comentários concluídos. Contém dados das conversas; preserve e não publique.
+- `comment-notifications-<lista>-<canal>.json`: marco inicial, checkpoint `lastRecovery`, comentários pendentes (incluindo texto e metadados de anexos), destinatários/partes confirmados e IDs de comentários concluídos. Contém dados das conversas; preserve e não publique.
 
 Esses arquivos são gravados com acesso restrito e estão ignorados pelo Git. Estado inválido não é apagado automaticamente. A confirmação do Discord e a gravação local continuam sendo operações separadas; o `nonce` estável reduz duplicações em uma interrupção abrupta entre elas.
 
-Para usar apenas a consulta de recuperação, defina `CLICKUP_WEBHOOK_ENABLED=false` e reinicie. Para desativar todos os avisos, defina também `TICKET_NOTIFICATIONS_ENABLED=false`. O cadastro remoto é preservado e atualizado/reativado quando o webhook voltar a ser habilitado.
+Para usar apenas a consulta de recuperação de tickets e comentários habilitados, defina `CLICKUP_WEBHOOK_ENABLED=false` e reinicie. Para desativar todos os avisos, defina também `TICKET_NOTIFICATIONS_ENABLED=false`. O cadastro remoto é preservado e atualizado/reativado quando o webhook voltar a ser habilitado.
 
 ## Testes e verificações
 
@@ -369,7 +373,7 @@ Toda comunicação com o Discord passa pelo `discord.js`. A integração com o C
 | A menção não notifica a pessoa | Confira o vínculo de IDs, a atribuição no ticket, o acesso ao canal e as configurações de notificações do usuário. |
 | O ClickUp limita as requisições | Aguarde antes de repetir a pesquisa e mantenha o intervalo do monitor dentro da configuração permitida. |
 | O botão de responsável não funciona | Confirme que o bot está ativo, que o aviso foi gerado com esta funcionalidade e que o token tem acesso de edição. Se o menu expirou, abra outro pelo botão. |
-| O comentário da Activity não chegou | Confira `TICKET_COMMENT_DM_ENABLED`, webhook ativo, responsável atual vinculado e permissão de privado. Edits e reações não geram aviso. Não há busca retroativa do histórico. |
+| O comentário da Activity não chegou | Confira `TICKET_COMMENT_DM_ENABLED`, responsável atual vinculado e permissão de privado. A recuperação roda ao iniciar e no intervalo configurado, mesmo sem webhook. Veja o log e preserve o estado local. Edições e reações não geram novo aviso. |
 | O responsável não recebeu o privado | Confira `TICKET_ASSIGNMENT_DM_ENABLED`, o vínculo de IDs e as configurações de mensagens diretas do destinatário. A confirmação da escolha informa falhas. Selecionar alguém já atribuído não reenvia o aviso. |
 | Um arquivo não veio anexado | Confira a permissão Anexar arquivos e os limites de tamanho/quantidade. Use os links do aviso ou abra o ticket. |
 | O túnel ou webhook não conecta | Confira a rede, `npm run tunnel:install`, a porta local, o workspace e o acesso da conta do token. A recuperação de 10 minutos continua ativa se o túnel falhar. |

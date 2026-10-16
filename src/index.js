@@ -4,6 +4,7 @@ import { Client, Events, GatewayIntentBits } from 'discord.js';
 import { readConfig, readNotificationConfig, readWebhookConfig } from './config.js';
 import { startClickUpWebhook } from './services/clickupWebhook.js';
 import { startTicketNotifications } from './services/ticketNotifications.js';
+import { startTicketCommentNotifications } from './services/commentNotifications.js';
 import { registerReadyEvent } from './events/ready.js';
 import { registerInteractionEvent } from './events/interactionCreate.js';
 import { BotSetupError, describeError } from './services/errors.js';
@@ -15,6 +16,7 @@ let client;
 let startupTimer;
 let stopping = false;
 let notificationMonitor;
+let commentMonitor;
 let webhookService;
 
 async function stop(exitCode = 0) {
@@ -23,7 +25,9 @@ async function stop(exitCode = 0) {
   clearTimeout(startupTimer);
   process.exitCode = exitCode;
   try {
+    const closingComments = commentMonitor?.stop();
     await webhookService?.stop();
+    await closingComments;
     await notificationMonitor?.stop();
     await client?.destroy();
   } catch {
@@ -56,7 +60,9 @@ async function main() {
     if (!notificationConfig || stopping) return;
     notificationMonitor = await startTicketNotifications(readyClient, notificationConfig);
     if (stopping) { await notificationMonitor.stop(); return; }
-    if (webhookConfig) webhookService = await startClickUpWebhook(notificationMonitor, webhookConfig, notificationConfig, readyClient);
+    commentMonitor = await startTicketCommentNotifications(readyClient, notificationConfig);
+    if (stopping) { await commentMonitor?.stop(); return; }
+    if (webhookConfig) webhookService = await startClickUpWebhook(notificationMonitor, webhookConfig, notificationConfig, commentMonitor);
     if (stopping) await webhookService?.stop();
   });
   client.on(Events.Error, (error) => console.error(`[ERRO] ${describeError(error)}`));

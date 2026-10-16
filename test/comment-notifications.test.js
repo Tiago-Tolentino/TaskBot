@@ -52,6 +52,7 @@ test('mensagem privada preserva texto longo em partes e anexos somente na primei
   for (const [index, part] of parts.entries()) {
     const embed = part.payload.embeds[0].toJSON();
     assert.ok(embed.description.length <= 4096);
+    assert.deepEqual((embed.fields || []).map((field) => field.name), index === 0 ? ['Anexos (1)'] : []);
     assert.deepEqual(part.payload.allowedMentions, { parse: [] });
     assert.equal(part.payload.components[0].toJSON().components[0].url, ticket.url);
     assert.equal(part.ticket.attachments.length, index === 0 ? 1 : 0);
@@ -165,10 +166,10 @@ test('webhook confirma comentário somente após persistir e o mantém separado 
   release(); assert.equal((await response).status, 202); assert.deepEqual(accepted, [event()]);
 });
 
-test('comentários são opcionais, exigem webhook e são adicionados ao cadastro quando habilitados', async () => {
+test('comentários são opcionais, funcionam sem webhook e são adicionados ao cadastro quando habilitados', async () => {
   const env = { TICKET_NOTIFICATIONS_ENABLED: 'true', TICKET_NOTIFICATION_CHANNEL_ID: '234567890123456789', CLICKUP_API_TOKEN: 'ficticio', CLICKUP_TICKETS_LIST_ID: '12345' };
   assert.equal(readNotificationConfig(env).commentDmEnabled, false);
-  assert.throws(() => readNotificationConfig({ ...env, TICKET_COMMENT_DM_ENABLED: 'true' }), /CLICKUP_WEBHOOK_ENABLED/);
+  assert.equal(readNotificationConfig({ ...env, TICKET_COMMENT_DM_ENABLED: 'true' }).commentDmEnabled, true);
   assert.equal(readNotificationConfig({ ...env, TICKET_COMMENT_DM_ENABLED: 'true', CLICKUP_WEBHOOK_ENABLED: 'true' }).commentDmEnabled, true);
   const calls = [];
   await ensureClickUpWebhook({ store: memoryStore(), scope: 's', workspaceId: '123', listId: '12345', endpoint: 'https://example.com/webhooks/clickup', commentDmEnabled: true,
@@ -233,4 +234,14 @@ test('imagens embutidas usam os metadados reais do ClickUp e não perdem o arqui
   const parts = buildCommentPayloads(ticket, value, 'list:channel', discordId);
   assert.equal(parts[0].ticket.attachments.length, 1);
   assert.ok(parts[0].payload.embeds[0].toJSON().description.includes('Mensagem com anexo.'));
+});
+
+
+test('aviso da Activity sem anexos mostra o comentário sem campos de status ou responsáveis', () => {
+  const comment = normalizeComment(raw('texto', { comment_text: 'Atualização da tratativa.', comment: [{ text: 'Atualização da tratativa.' }] }));
+  const [part] = buildCommentPayloads(ticket, comment, 'list:channel', discordId);
+  const embed = part.payload.embeds[0].toJSON();
+  assert.ok(embed.description.includes('Atualização da tratativa.'));
+  assert.deepEqual(embed.fields || [], []);
+  assert.deepEqual(part.ticket.attachments, []);
 });
