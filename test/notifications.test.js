@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { readNotificationConfig } from '../src/config.js';
 import { createNotificationStore } from '../src/services/notificationState.js';
 import { buildTicketNotification, createTicketMonitor, startTicketNotifications } from '../src/services/ticketNotifications.js';
+import { notifyNewTicketAssignees } from '../src/services/ticketAssignmentDm.js';
 import { getAllTickets } from '../src/integrations/clickup.js';
 
 function fixture(overrides = {}) {
@@ -186,4 +187,52 @@ test('IDs permitidos para atribuição são opcionais, validados e deduplicados'
   for (const value of ['nome', '11,,22', '0', '999999999999999999999']) {
     assert.throws(() => readNotificationConfig({ ...env, TICKET_ASSIGNMENT_ASSIGNEE_IDS: value }), /TICKET_ASSIGNMENT_ASSIGNEE_IDS/);
   }
+});
+
+
+test('canal recebe todos; privado só para vínculo configurado e após persistir aviso público', async () => {
+  const channelSent = []; const privateSent = [];
+  const values = [ticket('sem', []), ticket('outro', ['33']), ticket('vinculado', ['22', '22', '33'])];
+  let f;
+  f = fixture({ fetchTickets: async () => values, fetchTicket: async ({ taskId }) => values.find((value) => value.id === taskId),
+    sendNotification: async (value) => { channelSent.push(value.id); return { ticket: { ...value, attachments: [] } }; },
+    afterNotification: (value, { signal }) => notifyNewTicketAssignees({ ticket: value, signal,
+      config: { assignmentDmEnabled: true, discordUserMap: { '22': '345678901234567890' } }, client: {},
+    }, { notify: async (options) => {
+      assert.ok(f.state().notifiedIds.includes(options.ticket.id));
+      assert.deepEqual(options.ticket.attachments, []);
+      assert.equal(options.assignmentId, 'created:vinculado');
+      privateSent.push([options.ticket.id, options.assigneeId]);
+    } }),
+  });
+  await f.monitor.initialize();
+  await Promise.all([f.monitor.poll(), f.monitor.processTask('vinculado')]);
+  await f.monitor.poll();
+  assert.deepEqual(channelSent, ['sem', 'outro', 'vinculado']);
+  assert.deepEqual(privateSent, [['vinculado', '22']]);
+  await f.monitor.stop();
+});
+
+test('falha adicional no privado preserva canal, permite próximos tickets e avança checkpoint', async () => {
+  const errors = []; let clock = 1000;
+  const f = fixture({ now: () => clock, fetchTickets: async () => [ticket('a'), ticket('b')],
+    afterNotification: async () => { throw new Error('privado indisponível'); }, onError: (error) => errors.push(error),
+  });
+  await f.monitor.initialize(); clock = 2000;
+  await f.monitor.poll(); await f.monitor.poll();
+  assert.deepEqual(f.sent, ['a', 'b']);
+  assert.deepEqual(f.state().notifiedIds, ['a', 'b']);
+  assert.equal(f.state().lastScan, 2000);
+  assert.equal(errors.length, 2);
+  await f.monitor.stop();
+});
+
+test('falha no canal não tenta privado nem marca o ticket como avisado', async () => {
+  const f = fixture({ fetchTickets: async () => [ticket('a')],
+    sendNotification: async () => { throw new Error('canal indisponível'); },
+    afterNotification: async () => assert.fail('O privado depende da confirmação do canal.'),
+  });
+  await f.monitor.initialize(); await assert.rejects(f.monitor.poll());
+  assert.deepEqual(f.state().notifiedIds, []);
+  await f.monitor.stop();
 });

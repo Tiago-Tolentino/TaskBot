@@ -114,6 +114,55 @@ test('falha ao editar aviso informa sucesso no ClickUp sem repetir a atribuiçã
   assert.ok(select.replies[0].content.includes('não foi possível atualizar o aviso'));
 });
 
+test('aviso privado só é disparado depois da atribuição e confirmação no ClickUp', async () => {
+  const calls = [];
+  const f = fixture({ getConfig: () => ({ ...config, assignmentDmEnabled: true }),
+    assign: async () => { calls.push('assigned'); return { ticket: currentTicket, alreadyAssigned: false }; },
+    notifyAssignee: async (options) => { calls.push('private'); assert.equal(options.ticket, currentTicket); assert.equal(options.assigneeId, '22'); assert.ok(options.assignmentId); return { status: 'sent' }; },
+  });
+  const open = f.request(); await f.handler(open);
+  const select = f.request(open.replies[0].components[0].toJSON().components[0].custom_id, { values: ['22'] });
+  await f.handler(select);
+  assert.deepEqual(calls, ['assigned', 'private']);
+  assert.ok(select.replies[0].content.includes('Mensagem privada enviada'));
+});
+
+test('responsável já atribuído não recebe outro privado', async () => {
+  const f = fixture({ getConfig: () => ({ ...config, assignmentDmEnabled: true }),
+    assign: async () => ({ ticket: currentTicket, alreadyAssigned: true }),
+    notifyAssignee: () => assert.fail('Não deve repetir o privado.'),
+  });
+  const open = f.request(); await f.handler(open);
+  const select = f.request(open.replies[0].components[0].toJSON().components[0].custom_id, { values: ['22'] });
+  await f.handler(select);
+  assert.ok(select.replies[0].content.includes('já estava como responsável'));
+});
+
+test('falha ou bloqueio do privado não transforma atribuição confirmada em falha', async () => {
+  for (const status of ['blocked', 'failed', 'unmapped', 'throws']) {
+    const f = fixture({ getConfig: () => ({ ...config, assignmentDmEnabled: true }),
+      notifyAssignee: async () => { if (status === 'throws') throw new Error('TOKEN_SECRETO'); return { status }; },
+    });
+    const open = f.request(); await f.handler(open);
+    const select = f.request(open.replies[0].components[0].toJSON().components[0].custom_id, { values: ['22'] });
+    await f.handler(select);
+    assert.equal(f.assignments.length, 1);
+    assert.ok(select.replies[0].content.includes('adicionado como responsável'));
+    assert.equal(select.replies[0].content.includes('TOKEN_SECRETO'), false);
+    assert.equal(select.replies[0].content.includes('Mensagem privada enviada'), false);
+  }
+});
+
+test('falha na atribuição não envia privado', async () => {
+  const f = fixture({ getConfig: () => ({ ...config, assignmentDmEnabled: true }),
+    assign: async () => { throw new Error('ClickUp indisponível'); },
+    notifyAssignee: () => assert.fail('Não deve enviar antes de confirmar.'),
+  });
+  const open = f.request(); await f.handler(open);
+  await f.handler(f.request(open.replies[0].components[0].toJSON().components[0].custom_id, { values: ['22'] }));
+  assert.equal(f.edits.length, 0);
+});
+
 test('API usa atualização aditiva e confirma o responsável preservando os atuais', async (t) => {
   let assigned = false; const methods = [];
   t.mock.method(globalThis, 'fetch', async (url, options) => {

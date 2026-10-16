@@ -8,7 +8,9 @@ export function verifyWebhookSignature(body, signature, secret) {
   return timingSafeEqual(expected, Buffer.from(signature, 'hex'));
 }
 
-export async function startWebhookServer({ port, getCredentials, enqueue, onError = () => {} }) {
+export const TICKET_WEBHOOK_EVENTS = Object.freeze(['taskCreated', 'taskStatusUpdated']);
+
+export async function startWebhookServer({ port, getCredentials, enqueue, onAccepted = () => {}, onError = () => {} }) {
   let stopping = false;
   const server = createServer(async (request, response) => {
     const reply = (status) => { response.writeHead(status, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); response.end(); };
@@ -31,10 +33,11 @@ export async function startWebhookServer({ port, getCredentials, enqueue, onErro
       let payload;
       try { payload = JSON.parse(body.toString('utf8')); } catch { reply(400); return; }
       if (!payload || payload.webhook_id !== credentials.id) { reply(403); return; }
-      if (payload.event !== 'taskCreated') { reply(204); return; }
+      if (!TICKET_WEBHOOK_EVENTS.includes(payload.event)) { reply(204); return; }
       if (typeof payload.task_id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(payload.task_id)) { reply(400); return; }
       await enqueue(payload.task_id);
       reply(202);
+      onAccepted({ event: payload.event, taskId: payload.task_id });
     } catch (error) {
       onError(error);
       if (!response.headersSent && !response.destroyed) reply(503);

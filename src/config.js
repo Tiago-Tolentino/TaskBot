@@ -46,7 +46,8 @@ export function readNotificationConfig(env = process.env) {
   } catch {
     throw new BotSetupError('TICKET_NOTIFICATION_DISCORD_USER_MAP deve ser um objeto JSON com IDs do ClickUp e IDs do Discord entre aspas.');
   }
-  return { channelId, intervalMs: intervalSeconds * 1000, listId: env.CLICKUP_TICKETS_LIST_ID, discordUserMap, assignmentAssigneeIds };
+  return { channelId, intervalMs: intervalSeconds * 1000, listId: env.CLICKUP_TICKETS_LIST_ID, discordUserMap, assignmentAssigneeIds,
+    assignmentDmEnabled: env.TICKET_ASSIGNMENT_DM_ENABLED === 'true' };
 }
 
 

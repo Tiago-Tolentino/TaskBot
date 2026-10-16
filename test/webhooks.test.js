@@ -6,10 +6,10 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { readWebhookConfig } from '../src/config.js';
 import { getTicket } from '../src/integrations/clickup.js';
-import { ensureClickUpWebhook } from '../src/services/clickupWebhook.js';
+import { ensureClickUpWebhook, registerWebhookWithRetry } from '../src/services/clickupWebhook.js';
 import { createTicketMonitor } from '../src/services/ticketNotifications.js';
 import { createWebhookInbox } from '../src/services/webhookInbox.js';
-import { startWebhookServer, verifyWebhookSignature } from '../src/services/webhookServer.js';
+import { startWebhookServer, TICKET_WEBHOOK_EVENTS, verifyWebhookSignature } from '../src/services/webhookServer.js';
 import { startLocalTunnel } from '../src/services/localTunnel.js';
 
 const memoryStore = (initial = null) => {
@@ -101,7 +101,7 @@ test('fila recebe eventos sem aguardar API ou Discord e não perde gravações s
   assert.deepEqual((await store.read()).taskIds, ['a', 'b', 'c']);
 });
 
-test('registro cria apenas taskCreated na lista; reinício atualiza endereço e preserva segredo', async () => {
+test('registro cria eventos de criação e status na lista; reinício atualiza endereço e preserva segredo', async () => {
   const store = memoryStore();
   const calls = [];
   const request = async (...args) => { calls.push(args); return { webhook: { id: 'w', secret: 'segredo-ficticio' } }; };
@@ -109,11 +109,12 @@ test('registro cria apenas taskCreated na lista; reinício atualiza endereço e 
   const first = await ensureClickUpWebhook(options);
   assert.equal(first.id, 'w');
   assert.equal(calls[0][0], '/team/123/webhook');
-  assert.deepEqual(calls[0][3].body, { endpoint: options.endpoint, events: ['taskCreated'], list_id: '456' });
+  assert.deepEqual(calls[0][3].body, { endpoint: options.endpoint, events: TICKET_WEBHOOK_EVENTS, list_id: '456' });
   await ensureClickUpWebhook({ ...options, endpoint: 'https://outro.example.com/webhooks/clickup' });
   assert.equal(calls.length, 2);
   assert.equal(calls[1][3].method, 'PUT');
   assert.equal(calls[1][3].body.status, 'active');
+  assert.deepEqual(calls[1][3].body.events, ['taskCreated', 'taskStatusUpdated']);
   assert.equal((await store.read()).secret, 'segredo-ficticio');
 });
 
@@ -171,4 +172,40 @@ test('cloudflared é iniciado e encerrado pelo bot; processo recebe apenas ambie
   const tunnel = await startLocalTunnel({ port: 3000, binary });
   assert.equal(tunnel.url, 'https://teste.trycloudflare.com');
   await tunnel.stop(); await tunnel.closed;
+});
+
+
+test('evento de status autenticado também recupera ticket novo sem aceitar outros eventos', async (t) => {
+  const accepted = [];
+  const persisted = [];
+  const server = await startWebhookServer({ port: 0, getCredentials: () => ({ id: 'w', secret: 'segredo-ficticio' }),
+    enqueue: async (id) => persisted.push(id), onAccepted: (event) => accepted.push(event) });
+  t.after(() => server.stop());
+  const body = JSON.stringify({ event: 'taskStatusUpdated', webhook_id: 'w', task_id: 'a' });
+  const response = await fetch(`http://127.0.0.1:${server.port}/webhooks/clickup`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Signature': sign(body) }, body,
+  });
+  assert.equal(response.status, 202);
+  assert.deepEqual(persisted, ['a']);
+  assert.deepEqual(accepted, [{ event: 'taskStatusUpdated', taskId: 'a' }]);
+});
+
+
+test('falha transitória no cadastro repete o mesmo endpoint sem trocar o túnel', async () => {
+  const pauses = []; let attempts = 0;
+  const record = await registerWebhookWithRetry(async () => {
+    attempts++;
+    if (attempts <= 4) throw new Error('endpoint ainda indisponível');
+    return { id: 'w' };
+  }, { wait: async (ms) => pauses.push(ms) });
+  assert.deepEqual(record, { id: 'w' });
+  assert.deepEqual(pauses, [15000, 30000, 60000, 60000]);
+});
+
+test('encerramento interrompe tentativas de cadastro sem abrir outra conexão', async () => {
+  const controller = new AbortController(); let attempts = 0;
+  await assert.rejects(registerWebhookWithRetry(async () => {
+    attempts++; throw new Error('rede');
+  }, { signal: controller.signal, wait: async () => controller.abort() }));
+  assert.equal(attempts, 1);
 });

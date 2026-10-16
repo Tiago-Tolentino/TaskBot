@@ -1,9 +1,10 @@
 import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 import { ClickUpError, requestClickUp } from '../integrations/clickup.js';
 import { BotSetupError, describeError } from './errors.js';
 import { createNotificationStore } from './notificationState.js';
 import { createWebhookInbox } from './webhookInbox.js';
-import { startWebhookServer } from './webhookServer.js';
+import { startWebhookServer, TICKET_WEBHOOK_EVENTS } from './webhookServer.js';
 import { startLocalTunnel } from './localTunnel.js';
 
 export async function ensureClickUpWebhook({ store, scope, workspaceId, listId, endpoint, token = process.env.CLICKUP_API_TOKEN, signal, request = requestClickUp }) {
@@ -14,13 +15,13 @@ export async function ensureClickUpWebhook({ store, scope, workspaceId, listId, 
   let record;
   if (saved) {
     try {
-      await request(`/webhook/${encodeURIComponent(saved.id)}`, token, signal, { method: 'PUT', body: { endpoint, events: ['taskCreated'], status: 'active' } });
+      await request(`/webhook/${encodeURIComponent(saved.id)}`, token, signal, { method: 'PUT', body: { endpoint, events: TICKET_WEBHOOK_EVENTS, status: 'active' } });
       record = { ...saved, endpoint };
     } catch (error) { if (error.status !== 404) throw error; }
   }
   if (!record) {
     const data = await request(`/team/${workspaceId}/webhook`, token, signal, {
-      method: 'POST', body: { endpoint, events: ['taskCreated'], list_id: listId },
+      method: 'POST', body: { endpoint, events: TICKET_WEBHOOK_EVENTS, list_id: listId },
     });
     if (typeof data.webhook?.id !== 'string' || !data.webhook.id || typeof data.webhook?.secret !== 'string' || !data.webhook.secret) {
       throw new BotSetupError('O ClickUp não confirmou o registro e o segredo do webhook.');
@@ -29,6 +30,21 @@ export async function ensureClickUpWebhook({ store, scope, workspaceId, listId, 
   }
   await store.write(record);
   return record;
+}
+
+// URLs novas de Quick Tunnel podem levar alguns segundos para serem aceitas.
+// Preservar o mesmo túnel evita reiniciar essa espera a cada falha no cadastro.
+export async function registerWebhookWithRetry(register, { signal, onError = () => {}, wait = delay } = {}) {
+  let attempt = 0;
+  while (true) {
+    signal?.throwIfAborted();
+    try { return await register(); }
+    catch (error) {
+      signal?.throwIfAborted();
+      onError(error);
+      await wait(Math.min(15_000 * 2 ** Math.min(attempt++, 2), 60_000), undefined, { signal });
+    }
+  }
 }
 
 export async function startClickUpWebhook(monitor, config, notificationConfig) {
@@ -47,7 +63,8 @@ export async function startClickUpWebhook(monitor, config, notificationConfig) {
   let stopped = false;
   let server;
   try {
-    server = await startWebhookServer({ port: config.port, getCredentials: () => credentials, enqueue: (id) => inbox.enqueue(id), onError });
+    server = await startWebhookServer({ port: config.port, getCredentials: () => credentials, enqueue: (id) => inbox.enqueue(id),
+      onAccepted: ({ event, taskId }) => console.log(`[INFO] Webhook recebido e persistido: ${event}, ticket ${taskId}.`), onError });
   } catch (error) { await inbox.stop(); throw error; }
   inbox.start();
   async function connect() {
@@ -56,7 +73,11 @@ export async function startClickUpWebhook(monitor, config, notificationConfig) {
     const signal = AbortSignal.any([controller.signal, connection.signal]);
     try {
       tunnel = await startLocalTunnel({ port: config.port, binary: config.binary, signal });
-      credentials = await ensureClickUpWebhook({ store, scope, workspaceId: config.workspaceId, listId: notificationConfig.listId, endpoint: `${tunnel.url}/webhooks/clickup`, signal });
+      void tunnel.closed.then(() => connection.abort());
+      credentials = await registerWebhookWithRetry(
+        () => ensureClickUpWebhook({ store, scope, workspaceId: config.workspaceId, listId: notificationConfig.listId, endpoint: `${tunnel.url}/webhooks/clickup`, signal }),
+        { signal, onError },
+      );
       console.log('[INFO] Webhook ClickUp ativo via túnel local: novos tickets de qualquer responsável.');
       // Uma sequência de falhas pode suspender o webhook; recuperar sem exigir
       // reinício do bot. Nunca alterar os outros webhooks do workspace.

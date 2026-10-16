@@ -4,6 +4,7 @@ import { addTicketAssignee, ClickUpError } from '../integrations/clickup.js';
 import { getTicketFilters } from './ticketFilters.js';
 import { buildTicketNotification } from './ticketNotifications.js';
 import { readNotificationConfig } from '../config.js';
+import { assignmentDmFeedback, notifyTicketAssignee } from './ticketAssignmentDm.js';
 
 const OPEN = 'ticket:assign:';
 const SELECT = 'ticket:assignee:';
@@ -27,7 +28,7 @@ function picker(session, id) {
   return { content: `**Escolher responsável**\nTodos os ${session.users.length} responsáveis estão nesta mensagem. Selecione uma pessoa em qualquer um dos menus abaixo para adicioná-la ao ticket, preservando os responsáveis atuais.\nEsta seleção expira em 10 minutos.`, components, allowedMentions: NO_MENTIONS };
 }
 
-export function createTicketAssignmentHandler({ loadUsers = async () => (await getTicketFilters()).users, assign = addTicketAssignee, getConfig = readNotificationConfig, now = Date.now } = {}) {
+export function createTicketAssignmentHandler({ loadUsers = async () => (await getTicketFilters()).users, assign = addTicketAssignee, notifyAssignee = notifyTicketAssignee, getConfig = readNotificationConfig, now = Date.now } = {}) {
   const sessions = new Map();
   const locks = new Map();
   async function serialized(taskId, operation) {
@@ -86,9 +87,20 @@ export function createTicketAssignmentHandler({ loadUsers = async () => (await g
             // Não reenviar arquivos nem repetir pings ao atualizar a mensagem existente.
             await session.message.edit({ content: payload.content, embeds: payload.embeds, components: payload.components, allowedMentions: NO_MENTIONS });
           } catch { refreshed = false; }
+          let delivery;
+          if (!result.alreadyAssigned && config.assignmentDmEnabled) {
+            try {
+              delivery = await notifyAssignee({ client: interaction.client, ticket: result.ticket, assigneeId: userId, config, assignmentId: id });
+            } catch {
+              // Uma falha no aviso privado não invalida uma atribuição já confirmada.
+              console.error('[ERRO] Aviso privado de atribuição indisponível.');
+              delivery = { status: 'failed' };
+            }
+          }
           sessions.delete(id);
           await interaction.editReply({ content: `✅ ${escapeMarkdown(user.name)} ${result.alreadyAssigned ? 'já estava como responsável' : 'foi adicionado como responsável'} no ticket do ClickUp.`
-            + (refreshed ? '\nO aviso foi atualizado.' : '\nA atribuição foi confirmada, mas não foi possível atualizar o aviso no Discord.'), components: [], allowedMentions: NO_MENTIONS });
+            + (refreshed ? '\nO aviso foi atualizado.' : '\nA atribuição foi confirmada, mas não foi possível atualizar o aviso no Discord.')
+            + assignmentDmFeedback(delivery), components: [], allowedMentions: NO_MENTIONS });
         });
       } finally { session.busy = false; }
     } catch (error) {
