@@ -177,3 +177,13 @@ test('texto do ticket não autoriza menções adicionais e mapeamento não alter
   assert.deepEqual(payload.allowedMentions, { parse: [], users: ['345678901234567890'] });
   assert.equal(payload.nonce, buildTicketNotification(value, 'list:channel').nonce);
 });
+
+
+test('IDs permitidos para atribuição são opcionais, validados e deduplicados', () => {
+  const env = { TICKET_NOTIFICATIONS_ENABLED: 'true', TICKET_NOTIFICATION_CHANNEL_ID: '234567890123456789', CLICKUP_API_TOKEN: 'pk_ficticio', CLICKUP_TICKETS_LIST_ID: '12345' };
+  assert.deepEqual(readNotificationConfig(env).assignmentAssigneeIds, []);
+  assert.deepEqual(readNotificationConfig({ ...env, TICKET_ASSIGNMENT_ASSIGNEE_IDS: '11, 22,11,33' }).assignmentAssigneeIds, ['11', '22', '33']);
+  for (const value of ['nome', '11,,22', '0', '999999999999999999999']) {
+    assert.throws(() => readNotificationConfig({ ...env, TICKET_ASSIGNMENT_ASSIGNEE_IDS: value }), /TICKET_ASSIGNMENT_ASSIGNEE_IDS/);
+  }
+});

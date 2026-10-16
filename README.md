@@ -15,6 +15,8 @@ O projeto atende a lista **Tickets** do space **Suporte B2C**. Os IDs da lista, 
 - Avisos de qualquer ticket novo, inclusive sem responsável, recebidos por webhook com túnel local.
 - Consulta de recuperação a cada 10 minutos e ao iniciar, para cobrir falhas de entrega.
 - Menções aos usuários do Discord vinculados aos responsáveis do ClickUp.
+- Botão nos avisos para adicionar um responsável do ClickUp, preservando os atuais.
+- Anexos do ticket enviados junto do aviso, com links de acesso quando o upload não for possível.
 - Controle local dos avisos enviados para evitar repetições nas consultas e nos reinícios normais.
 
 ## Tecnologias
@@ -88,6 +90,7 @@ TICKET_NOTIFICATIONS_ENABLED=false
 TICKET_NOTIFICATION_CHANNEL_ID=
 TICKET_NOTIFICATION_INTERVAL_SECONDS=600
 TICKET_NOTIFICATION_DISCORD_USER_MAP={}
+TICKET_ASSIGNMENT_ASSIGNEE_IDS=
 
 CLICKUP_WEBHOOK_ENABLED=false
 CLICKUP_WEBHOOK_PORT=3000
@@ -105,6 +108,7 @@ CLOUDFLARED_PATH=
 | `TICKET_NOTIFICATION_CHANNEL_ID` | ID do canal que receberá os avisos automáticos. |
 | `TICKET_NOTIFICATION_INTERVAL_SECONDS` | Intervalo entre consultas de recuperação: inteiro de 30 a 3600 segundos. Padrão: `600` (10 minutos). |
 | `TICKET_NOTIFICATION_DISCORD_USER_MAP` | Objeto JSON que associa IDs do ClickUp a IDs do Discord para as menções. Não limita quais tickets geram avisos. |
+| `TICKET_ASSIGNMENT_ASSIGNEE_IDS` | IDs do ClickUp autorizados no botão de atribuição, separados por vírgula. Vazio: nenhuma atribuição disponível. Não limita os avisos automáticos. |
 | `CLICKUP_WEBHOOK_ENABLED` | Ativa o servidor de webhook, o túnel local e o cadastro automático no ClickUp quando definido como `true`. Padrão: desativado. |
 | `CLICKUP_WEBHOOK_PORT` | Porta HTTP local do receptor, de 1024 a 65535. Padrão: `3000`; escuta somente em `127.0.0.1`. |
 | `CLOUDFLARED_PATH` | Caminho opcional do executável. Se vazio, procura `.tools/cloudflared` e depois `cloudflared` no PATH. |
@@ -121,7 +125,7 @@ Variáveis já definidas no ambiente do terminal têm prioridade sobre o `.env`.
 
 O bot usa somente o intent `Guilds`. Não é necessário habilitar intents privilegiados, como Message Content, para as funcionalidades atuais.
 
-Nos canais utilizados, conceda **Visualizar canal** e **Enviar mensagens**. No canal dos avisos, conceda também **Inserir links** para os embeds. Confira as permissões de uso dos comandos de aplicativos. Não é necessário conceder Administrador.
+Nos canais utilizados, conceda **Visualizar canal** e **Enviar mensagens**. No canal dos avisos, conceda também **Inserir links** para os embeds e **Anexar arquivos** para o envio dos anexos. Sem permissão de anexar, o aviso usa links. Confira as permissões de uso dos comandos de aplicativos. Não é necessário conceder Administrador.
 
 ### Preparar o ClickUp
 
@@ -230,6 +234,30 @@ O acompanhamento começa na primeira ativação. Ao migrar da versão com filtro
 
 Cada aviso contém título, status, responsáveis, trecho do resumo e link. Se a consulta ocorrer antes de o responsável ser atribuído, o aviso pode mostrar `Não atribuído`; uma atribuição posterior não gera um segundo aviso.
 
+### Escolher responsável pelo Discord
+
+Os novos avisos incluem o botão **Escolher responsável**. Ao clicar, o bot abre um menu privado com os usuários autorizados em `TICKET_ASSIGNMENT_ASSIGNEE_IDS` que estejam disponíveis no workspace do ClickUp, em **ordem alfabética**. O vínculo de menção no Discord não altera essa ordem. Cada opção mostra o ID do ClickUp na descrição.
+
+Configure essa variável no `.env` local. Exemplo com IDs fictícios: `TICKET_ASSIGNMENT_ASSIGNEE_IDS=12345678,87654321`. A restrição é validada tanto ao abrir o menu quanto ao confirmar a escolha. Sem IDs configurados, o botão informa que não há responsáveis autorizados; os avisos de qualquer ticket novo continuam ativos.
+
+Todos os nomes autorizados ficam na mesma mensagem, em seletores de até 25 opções, sem paginação. Uma lista de quatro responsáveis aparece em um único seletor.
+
+Selecione uma pessoa para **adicioná-la ao ticket**, preservando todos os responsáveis atuais. A ação é gravada no ClickUp usando a conta do token configurado, que precisa ter permissão de editar o ticket. Selecionar alguém que já está atribuído não duplica a atribuição.
+
+Após confirmar a alteração no ClickUp, o bot atualiza o aviso original com os responsáveis atuais. Os anexos já enviados permanecem na mensagem; a atualização não repete pings. Se a atualização do aviso falhar, a confirmação privada informa que a atribuição no ClickUp foi concluída.
+
+Qualquer pessoa com acesso ao canal de avisos pode abrir seu próprio menu. Apenas quem abriu uma seleção pode usá-la. O menu expira após 10 minutos ou ao reiniciar o bot; clique novamente no botão do aviso para abrir outro. O botão dos avisos gerados com esta funcionalidade continua funcionando após reinícios.
+
+### Anexos dos tickets
+
+O aviso consulta os anexos nativos do ticket no ClickUp e tenta enviá-los como arquivos na **mesma mensagem** do resumo e do botão. Isso também vale para tickets encontrados pela recuperação periódica.
+
+Para manter o envio dentro de limites previsíveis, o bot envia até **10 arquivos**, com no máximo **8 MiB por arquivo** e **20 MiB no total** por aviso. Os downloads têm limite de tempo e são mantidos somente em memória, sem salvar os arquivos no repositório ou no estado local. O token do ClickUp não é repassado aos servidores dos anexos.
+
+O embed também lista links dos anexos. Arquivos que excedam esses limites, downloads que falhem, links de outros provedores ou ausência de permissão **Anexar arquivos** continuam acessíveis pelos links ou pelo ticket. Se o Discord recusar o upload por tamanho ou permissão, o bot tenta entregar o aviso com links. Quando a lista de links for muito longa, o aviso direciona para os demais anexos no ticket.
+
+Os anexos refletem o momento da consulta para envio do aviso. Arquivos adicionados posteriormente não geram novos avisos automáticos. Links dentro da descrição não são tratados como anexos nativos.
+
 ### Menções
 
 As menções continuam opcionais. Exemplo com **IDs fictícios**:
@@ -270,7 +298,7 @@ npm test
 | `npm test` | Executa os testes automatizados locais. |
 | `npm run clickup:check` | Valida a autenticação na API real do ClickUp. |
 
-Os testes locais simulam APIs, canais e interações. Cobrem configuração, comandos, paginação, filtros, sugestões, resumos, navegação, menções, persistência, assinaturas de webhook, fila, concorrência e falhas do monitor. Os testes HTTP usam somente um servidor local simulado. Eles não enviam mensagens reais nem modificam tickets no ClickUp.
+Os testes locais simulam APIs, canais e interações. Cobrem configuração, comandos, paginação, filtros, sugestões, resumos, navegação, menções, persistência, assinaturas de webhook, fila, concorrência, escolha de responsáveis, atualização aditiva, anexos e falhas do monitor. Os testes HTTP usam somente um servidor local simulado. Eles não enviam mensagens reais nem modificam tickets no ClickUp.
 
 Para uma validação real, execute `/test` e `/ticket` no Discord. Para testar o monitor, crie um ticket novo após a ativação, com ou sem responsável, e confira o aviso no canal e o log de confirmação com o ID da mensagem.
 
@@ -298,6 +326,8 @@ Toda comunicação com o Discord passa pelo `discord.js`. A integração com o C
 | O monitor não avisa | Confira a ativação, o canal, as permissões e se o ticket foi criado desde o início do acompanhamento da regra atual. |
 | A menção não notifica a pessoa | Confira o vínculo de IDs, a atribuição no ticket, o acesso ao canal e as configurações de notificações do usuário. |
 | O ClickUp limita as requisições | Aguarde antes de repetir a pesquisa e mantenha o intervalo do monitor dentro da configuração permitida. |
+| O botão de responsável não funciona | Confirme que o bot está ativo, que o aviso foi gerado com esta funcionalidade e que o token tem acesso de edição. Se o menu expirou, abra outro pelo botão. |
+| Um arquivo não veio anexado | Confira a permissão Anexar arquivos e os limites de tamanho/quantidade. Use os links do aviso ou abra o ticket. |
 | O túnel ou webhook não conecta | Confira a rede, `npm run tunnel:install`, a porta local, o workspace e o acesso da conta do token. A recuperação de 10 minutos continua ativa se o túnel falhar. |
 | O estado dos avisos está inválido | Verifique o arquivo em `.data/` e restaure um backup válido antes de reativar o monitor. |
 

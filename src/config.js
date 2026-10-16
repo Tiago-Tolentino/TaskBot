@@ -31,6 +31,11 @@ export function readNotificationConfig(env = process.env) {
   if (!env.CLICKUP_API_TOKEN?.trim() || !/^\d+$/.test(env.CLICKUP_TICKETS_LIST_ID || '')) {
     throw new BotSetupError('Configure CLICKUP_API_TOKEN e CLICKUP_TICKETS_LIST_ID para ativar os avisos automáticos.');
   }
+  const rawAssignmentIds = env.TICKET_ASSIGNMENT_ASSIGNEE_IDS?.trim();
+  const assignmentAssigneeIds = [...new Set(rawAssignmentIds ? rawAssignmentIds.split(',').map((id) => id.trim()) : [])];
+  if (assignmentAssigneeIds.some((id) => !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id)))) {
+    throw new BotSetupError('TICKET_ASSIGNMENT_ASSIGNEE_IDS deve conter IDs válidos do ClickUp separados por vírgula.');
+  }
   let discordUserMap;
   try {
     discordUserMap = JSON.parse(env.TICKET_NOTIFICATION_DISCORD_USER_MAP || '{}');
@@ -41,7 +46,7 @@ export function readNotificationConfig(env = process.env) {
   } catch {
     throw new BotSetupError('TICKET_NOTIFICATION_DISCORD_USER_MAP deve ser um objeto JSON com IDs do ClickUp e IDs do Discord entre aspas.');
   }
-  return { channelId, intervalMs: intervalSeconds * 1000, listId: env.CLICKUP_TICKETS_LIST_ID, discordUserMap };
+  return { channelId, intervalMs: intervalSeconds * 1000, listId: env.CLICKUP_TICKETS_LIST_ID, discordUserMap, assignmentAssigneeIds };
 }
 
 
