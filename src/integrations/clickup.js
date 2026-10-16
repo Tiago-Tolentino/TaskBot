@@ -193,3 +193,29 @@ export async function addTicketAssignee({ taskId, assigneeId, token = process.en
   }
   return { ticket: updated, alreadyAssigned: false };
 }
+
+// A API entrega comentários do mais recente para o mais antigo, 25 por página.
+export async function getTicketComment({ taskId, commentId, token = process.env.CLICKUP_API_TOKEN, signal: externalSignal } = {}) {
+  if (![taskId, commentId].every((id) => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(id))) {
+    throw new ClickUpError('ID de ticket ou comentário inválido.');
+  }
+  const signal = externalSignal ? AbortSignal.any([externalSignal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000);
+  const cursors = new Set();
+  let query = '';
+  while (true) {
+    let data;
+    try { data = await requestClickUp(`/task/${encodeURIComponent(taskId)}/comment${query}`, token, signal); }
+    catch (error) { if (error.status === 404) return null; throw error; }
+    if (!Array.isArray(data.comments)) throw new ClickUpError('O ClickUp retornou comentários inválidos.');
+    const found = data.comments.find((comment) => String(comment.id) === commentId);
+    if (found) return found;
+    if (!data.comments.length) return null;
+    const last = data.comments.at(-1);
+    const id = typeof last?.id === 'string' ? last.id : Number.isSafeInteger(last?.id) ? String(last.id) : '';
+    const date = Number(last?.date);
+    if (!id || !Number.isSafeInteger(date) || date <= 0) throw new ClickUpError('A paginação dos comentários retornou um cursor inválido.');
+    query = '?' + new URLSearchParams({ start: String(date), start_id: id });
+    if (cursors.has(query)) throw new ClickUpError('O ClickUp repetiu uma página de comentários.');
+    cursors.add(query);
+  }
+}

@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { BotSetupError } from './errors.js';
+import { extractCommentEvents } from './ticketComments.js';
 
 export function verifyWebhookSignature(body, signature, secret) {
   if (typeof signature !== 'string' || !/^[a-f0-9]{64}$/i.test(signature) || !secret) return false;
@@ -10,7 +11,7 @@ export function verifyWebhookSignature(body, signature, secret) {
 
 export const TICKET_WEBHOOK_EVENTS = Object.freeze(['taskCreated', 'taskStatusUpdated']);
 
-export async function startWebhookServer({ port, getCredentials, enqueue, onAccepted = () => {}, onError = () => {} }) {
+export async function startWebhookServer({ port, getCredentials, enqueue, enqueueComments, onAccepted = () => {}, onError = () => {} }) {
   let stopping = false;
   const server = createServer(async (request, response) => {
     const reply = (status) => { response.writeHead(status, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); response.end(); };
@@ -33,6 +34,15 @@ export async function startWebhookServer({ port, getCredentials, enqueue, onAcce
       let payload;
       try { payload = JSON.parse(body.toString('utf8')); } catch { reply(400); return; }
       if (!payload || payload.webhook_id !== credentials.id) { reply(403); return; }
+      if (payload.event === 'taskCommentPosted') {
+        if (!enqueueComments) { reply(204); return; }
+        const events = extractCommentEvents(payload);
+        if (!events.length) { reply(400); return; }
+        await enqueueComments(events);
+        reply(202);
+        onAccepted({ event: payload.event, taskId: payload.task_id });
+        return;
+      }
       if (!TICKET_WEBHOOK_EVENTS.includes(payload.event)) { reply(204); return; }
       if (typeof payload.task_id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(payload.task_id)) { reply(400); return; }
       await enqueue(payload.task_id);

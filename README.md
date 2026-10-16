@@ -17,6 +17,7 @@ O projeto atende a lista **Tickets** do space **Suporte B2C**. Os IDs da lista, 
 - Menções aos usuários do Discord vinculados aos responsáveis do ClickUp.
 - Botão nos avisos para adicionar um responsável do ClickUp, preservando os atuais.
 - Aviso privado opcional aos responsáveis vinculados ao Discord, no primeiro aviso do ticket ou após atribuição pelo botão.
+- Mensagens novas da Activity encaminhadas no privado, com autor, texto e anexos do comentário.
 - Anexos do ticket enviados junto do aviso, com links de acesso quando o upload não for possível.
 - Controle local dos avisos enviados para evitar repetições nas consultas e nos reinícios normais.
 
@@ -93,6 +94,7 @@ TICKET_NOTIFICATION_INTERVAL_SECONDS=600
 TICKET_NOTIFICATION_DISCORD_USER_MAP={}
 TICKET_ASSIGNMENT_ASSIGNEE_IDS=
 TICKET_ASSIGNMENT_DM_ENABLED=false
+TICKET_COMMENT_DM_ENABLED=false
 
 CLICKUP_WEBHOOK_ENABLED=false
 CLICKUP_WEBHOOK_PORT=3000
@@ -112,6 +114,7 @@ CLOUDFLARED_PATH=
 | `TICKET_NOTIFICATION_DISCORD_USER_MAP` | Objeto JSON que associa IDs do ClickUp a IDs do Discord para menções e avisos privados de atribuição. Não limita quais tickets geram avisos. |
 | `TICKET_ASSIGNMENT_ASSIGNEE_IDS` | IDs do ClickUp autorizados no botão de atribuição, separados por vírgula. Vazio: nenhuma atribuição disponível. Não limita os avisos automáticos. |
 | `TICKET_ASSIGNMENT_DM_ENABLED` | Envia um privado aos responsáveis vinculados no primeiro aviso de um ticket novo ou após uma nova atribuição pelo botão. Padrão: `false`. |
+| `TICKET_COMMENT_DM_ENABLED` | Envia comentários novos da Activity no privado dos responsáveis vinculados. Requer webhook ativo. Padrão: `false`. |
 | `CLICKUP_WEBHOOK_ENABLED` | Ativa o servidor de webhook, o túnel local e o cadastro automático no ClickUp quando definido como `true`. Padrão: desativado. |
 | `CLICKUP_WEBHOOK_PORT` | Porta HTTP local do receptor, de 1024 a 65535. Padrão: `3000`; escuta somente em `127.0.0.1`. |
 | `CLOUDFLARED_PATH` | Caminho opcional do executável. Se vazio, procura `.tools/cloudflared` e depois `cloudflared` no PATH. |
@@ -221,7 +224,7 @@ O bot avisa sobre **qualquer ticket novo na lista configurada**, inclusive sem r
 
 O [Quick Tunnel da Cloudflare](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/) fornece um endereço HTTPS temporário, sem exigir conta ou domínio. A cada nova execução, o endereço pode mudar; o bot atualiza o mesmo webhook salvo em `.data/`. Não é necessário copiar a URL manualmente para o ClickUp. Se o cadastro falhar, o bot mantém o mesmo túnel e tenta novamente após 15, 30 e depois 60 segundos, sem gerar um endereço novo a cada tentativa.
 
-O computador, o bot, a conexão de rede e o túnel precisam permanecer ativos. Quick Tunnels são voltados ao desenvolvimento e não têm garantia de disponibilidade. Se o processo do túnel encerrar, o bot tenta recriá-lo após 60 segundos. O encerramento normal do bot também encerra seu túnel.
+O computador, o bot, a conexão de rede e o túnel precisam permanecer ativos. Quick Tunnels são voltados ao desenvolvimento e não têm garantia de disponibilidade. O bot confirma que a rota pública responde antes do cadastro e verifica seu acesso junto com a saúde do webhook. Se o processo do túnel encerrar ou o endereço público ficar inacessível nessa verificação, o bot tenta recriá-lo após 60 segundos. O encerramento normal do bot também encerra seu túnel.
 
 ### Recepção e recuperação
 
@@ -272,6 +275,20 @@ Responsáveis sem vínculo continuam podendo ser atribuídos, mas não recebem p
 
 Se o Discord bloquear mensagens diretas ou houver falha de entrega, a atribuição no ClickUp permanece concluída e a confirmação privada de quem fez a escolha informa o problema. Uma falha no privado nunca impede ou desfaz o aviso no canal. Não há reenvio automático de privados que falharam nem envio retroativo para tickets já avisados. Além dos responsáveis presentes no primeiro aviso de um ticket novo, o privado é disparado por novas atribuições feitas pelo botão do bot; atribuições posteriores feitas diretamente no ClickUp não disparam este privado.
 
+### Mensagens da Activity no privado
+
+A [API de comentários do ClickUp](https://developer.clickup.com/docs/comments) permite acessar as mensagens publicadas na Activity. Com `TICKET_COMMENT_DM_ENABLED=true`, o webhook também assina `taskCommentPosted`, conforme os [eventos de comentários](https://developer.clickup.com/docs/webhooktaskpayloads).
+
+O bot consulta os responsáveis atuais do ticket e envia uma cópia privada a cada Discord vinculado em `TICKET_NOTIFICATION_DISCORD_USER_MAP`. Isso também funciona em tickets antigos: o que precisa ser novo é o comentário. O autor do comentário não é excluído se também for um dos responsáveis. Quem não tem vínculo não recebe privado; não há encaminhamento dessas conversas ao canal público. A opção é independente de `TICKET_ASSIGNMENT_DM_ENABLED`.
+
+A mensagem mostra título e link do ticket, status, responsáveis, autor, data e conteúdo do comentário. Textos longos são divididos em partes, preservando o conteúdo. O botão abre o ticket no ClickUp. Somente os anexos daquele comentário são enviados, na primeira parte; os arquivos gerais do ticket não são reenviados. Valem os mesmos limites de tamanho, quantidade, hosts e tempo dos avisos de tickets, com links como alternativa. Anexos embutidos no comentário e anexos de e-mail disponibilizados pelo evento são considerados.
+
+O evento é validado e gravado numa fila separada antes da confirmação HTTP. Eventos duplicados e reinícios preservam o controle por comentário, destinatário e parte enviada. Falhas transitórias são repetidas após 30 segundos sem repetir partes confirmadas. Se o Discord bloquear o privado, a falha é registrada e o envio aos demais responsáveis continua; esse bloqueio não é repetido automaticamente. Tickets removidos ou fora da lista principal configurada não são encaminhados.
+
+O acompanhamento começa quando a função é ativada pela primeira vez e não envia o histórico anterior. Comentários recebidos e pendentes são recuperados após reinícios. Esta função depende da entrega do webhook: a consulta de recuperação de 10 minutos continua voltada a novos tickets e não varre o histórico de comentários durante períodos em que o receptor estava offline. Não são enviados avisos para edições de comentários, reações ou mudanças de status. Respostas que o ClickUp disponibilizar como `taskCommentPosted` seguem o mesmo fluxo.
+
+Para testar, publique uma nova mensagem na Activity de um ticket da lista configurada, com um responsável vinculado, e inclua um arquivo. Confirme a chegada no privado e o log `Comentário enviado no privado`.
+
 ### Anexos dos tickets
 
 O aviso consulta os anexos nativos do ticket no ClickUp e tenta enviá-los como arquivos na **mesma mensagem** do resumo e do botão. Isso também vale para tickets encontrados pela recuperação periódica.
@@ -299,6 +316,7 @@ Preserve todo o diretório `.data/`, incluindo:
 - `ticket-notifications-<lista>-<canal>.json`: marcos de acompanhamento, checkpoint e IDs já avisados.
 - `clickup-webhook-<workspace>-<lista>-<canal>.json`: ID, endereço e **segredo do webhook**; não publique nem exiba seu conteúdo.
 - `webhook-inbox-<workspace>-<lista>-<canal>.json`: IDs dos tickets recebidos e ainda pendentes.
+- `comment-notifications-<lista>-<canal>.json`: marco inicial, comentários pendentes (incluindo texto e metadados de anexos), destinatários/partes confirmados e IDs de comentários concluídos. Contém dados das conversas; preserve e não publique.
 
 Esses arquivos são gravados com acesso restrito e estão ignorados pelo Git. Estado inválido não é apagado automaticamente. A confirmação do Discord e a gravação local continuam sendo operações separadas; o `nonce` estável reduz duplicações em uma interrupção abrupta entre elas.
 
@@ -322,7 +340,7 @@ npm test
 | `npm test` | Executa os testes automatizados locais. |
 | `npm run clickup:check` | Valida a autenticação na API real do ClickUp. |
 
-Os testes locais simulam APIs, canais e interações. Cobrem configuração, comandos, paginação, filtros, sugestões, resumos, navegação, menções, persistência, assinaturas de webhook, fila, concorrência, escolha de responsáveis, atualização aditiva, mensagens privadas, anexos e falhas do monitor. Os testes HTTP usam somente um servidor local simulado. Eles não enviam mensagens reais nem modificam tickets no ClickUp.
+Os testes locais simulam APIs, canais e interações. Cobrem configuração, comandos, paginação, filtros, sugestões, resumos, navegação, menções, persistência, assinaturas de webhook, fila, concorrência, escolha de responsáveis, atualização aditiva, mensagens privadas, comentários da Activity, anexos e falhas do monitor. Os testes HTTP usam somente um servidor local simulado. Eles não enviam mensagens reais nem modificam tickets no ClickUp.
 
 Para uma validação real, execute `/test` e `/ticket` no Discord. Para testar o monitor, crie um ticket novo após a ativação, com ou sem responsável, e confira o aviso no canal e o log de confirmação com o ID da mensagem.
 
@@ -351,6 +369,7 @@ Toda comunicação com o Discord passa pelo `discord.js`. A integração com o C
 | A menção não notifica a pessoa | Confira o vínculo de IDs, a atribuição no ticket, o acesso ao canal e as configurações de notificações do usuário. |
 | O ClickUp limita as requisições | Aguarde antes de repetir a pesquisa e mantenha o intervalo do monitor dentro da configuração permitida. |
 | O botão de responsável não funciona | Confirme que o bot está ativo, que o aviso foi gerado com esta funcionalidade e que o token tem acesso de edição. Se o menu expirou, abra outro pelo botão. |
+| O comentário da Activity não chegou | Confira `TICKET_COMMENT_DM_ENABLED`, webhook ativo, responsável atual vinculado e permissão de privado. Edits e reações não geram aviso. Não há busca retroativa do histórico. |
 | O responsável não recebeu o privado | Confira `TICKET_ASSIGNMENT_DM_ENABLED`, o vínculo de IDs e as configurações de mensagens diretas do destinatário. A confirmação da escolha informa falhas. Selecionar alguém já atribuído não reenvia o aviso. |
 | Um arquivo não veio anexado | Confira a permissão Anexar arquivos e os limites de tamanho/quantidade. Use os links do aviso ou abra o ticket. |
 | O túnel ou webhook não conecta | Confira a rede, `npm run tunnel:install`, a porta local, o workspace e o acesso da conta do token. A recuperação de 10 minutos continua ativa se o túnel falhar. |
