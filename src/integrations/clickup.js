@@ -219,3 +219,47 @@ export async function getTicketComment({ taskId, commentId, token = process.env.
     cursors.add(query);
   }
 }
+
+// Respostas novas podem pertencer a comentários antigos: percorrer os pais
+// completos, consultando as threads indicadas pela API, antes de concluir.
+export async function getTicketCommentsSince({ taskId, since, token = process.env.CLICKUP_API_TOKEN,
+  signal: externalSignal, request = requestClickUp,
+} = {}) {
+  if (typeof taskId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(taskId)
+    || !Number.isSafeInteger(since) || since <= 0) throw new ClickUpError('Parâmetros de recuperação de comentários inválidos.');
+  const signal = externalSignal ? AbortSignal.any([externalSignal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000);
+  const comments = new Map();
+  const parents = new Set();
+  const cursors = new Set();
+  const validate = (comment) => {
+    const id = typeof comment?.id === 'string' ? comment.id : Number.isSafeInteger(comment?.id) ? String(comment.id) : '';
+    const date = Number(comment?.date);
+    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id) || !Number.isSafeInteger(date) || date <= 0) {
+      throw new ClickUpError('O ClickUp retornou um comentário inválido; a recuperação será repetida.');
+    }
+    if (date >= since) comments.set(id, comment);
+    return { id, date };
+  };
+  let query = '';
+  while (true) {
+    let data;
+    try { data = await request(`/task/${encodeURIComponent(taskId)}/comment${query}`, token, signal); }
+    catch (error) { if (error.status === 404) return []; throw error; }
+    if (!Array.isArray(data?.comments)) throw new ClickUpError('O ClickUp retornou uma página de comentários inválida.');
+    if (!data.comments.length) break;
+    let last;
+    for (const comment of data.comments) {
+      last = validate(comment);
+      if (!parents.has(last.id) && Number(comment.reply_count) > 0) {
+        const replies = await request(`/comment/${encodeURIComponent(last.id)}/reply`, token, signal);
+        if (!Array.isArray(replies?.comments)) throw new ClickUpError('O ClickUp retornou respostas de comentário inválidas.');
+        for (const reply of replies.comments) validate(reply);
+      }
+      parents.add(last.id);
+    }
+    query = '?' + new URLSearchParams({ start: String(last.date), start_id: last.id });
+    if (cursors.has(query)) throw new ClickUpError('O ClickUp repetiu uma página durante a recuperação de comentários.');
+    cursors.add(query);
+  }
+  return [...comments.values()].sort((a, b) => Number(a.date) - Number(b.date) || String(a.id).localeCompare(String(b.id)));
+}

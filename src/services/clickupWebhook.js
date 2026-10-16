@@ -5,7 +5,6 @@ import { BotSetupError, describeError } from './errors.js';
 import { createNotificationStore } from './notificationState.js';
 import { createWebhookInbox } from './webhookInbox.js';
 import { startWebhookServer, TICKET_WEBHOOK_EVENTS } from './webhookServer.js';
-import { startTicketCommentNotifications } from './commentNotifications.js';
 import { startLocalTunnel } from './localTunnel.js';
 
 export async function ensureClickUpWebhook({ store, scope, workspaceId, listId, endpoint, commentDmEnabled = false, token = process.env.CLICKUP_API_TOKEN, signal, request = requestClickUp }) {
@@ -64,14 +63,13 @@ export async function verifyTunnelEndpoint(endpoint, { signal, probe = fetch, wa
   throw new BotSetupError('O endereço público do túnel está inacessível. O bot tentará outra conexão; a recuperação periódica continua ativa.');
 }
 
-export async function startClickUpWebhook(monitor, config, notificationConfig, client) {
+export async function startClickUpWebhook(monitor, config, notificationConfig, comments) {
   const scope = `${config.workspaceId}:${notificationConfig.listId}:${notificationConfig.channelId}`;
   const dataPath = (kind) => fileURLToPath(new URL(`../../.data/${kind}-${scope.replaceAll(':', '-')}.json`, import.meta.url));
   const store = createNotificationStore(dataPath('clickup-webhook'));
   const controller = new AbortController();
   const onError = (error) => console.error(`[ERRO] Webhook: ${error instanceof ClickUpError ? error.message : describeError(error)}`);
   const inbox = await createWebhookInbox({ store: createNotificationStore(dataPath('webhook-inbox')), processTask: (id) => monitor.processTask(id), onError });
-  const comments = await startTicketCommentNotifications(client, notificationConfig);
   let credentials;
   let tunnel;
   let timer;
@@ -83,7 +81,7 @@ export async function startClickUpWebhook(monitor, config, notificationConfig, c
   try {
     server = await startWebhookServer({ port: config.port, getCredentials: () => credentials, enqueue: (id) => inbox.enqueue(id), enqueueComments: comments ? (events) => comments.enqueue(events) : undefined,
       onAccepted: ({ event, taskId }) => console.log(`[INFO] Webhook recebido e persistido: ${event}, ticket ${taskId}.`), onError });
-  } catch (error) { await comments?.stop(); await inbox.stop(); throw error; }
+  } catch (error) { await inbox.stop(); throw error; }
   inbox.start();
   async function connect() {
     if (stopped) return;
@@ -140,10 +138,8 @@ export async function startClickUpWebhook(monitor, config, notificationConfig, c
       await tunnel?.stop();
       // Libera a fila caso esteja aguardando uma consulta do monitor.
       const stoppingInbox = inbox.stop();
-      const stoppingComments = comments?.stop();
       await monitor.stop();
       await stoppingInbox;
-      await stoppingComments;
       await connecting;
     },
   };
