@@ -1,4 +1,5 @@
 import { extractTicketSummary } from '../services/ticketSummary.js';
+import { normalizeAttachments } from '../services/ticketAttachments.js';
 
 export class ClickUpError extends Error {}
 
@@ -160,6 +161,7 @@ export function normalizeTicket(task) {
     createdAt: Number(task.date_created) || 0,
     assignees: (task.assignees || []).map((user) => ({ id: String(user.id), name: user.username || `Usuário ${user.id}` })),
     summary: extractTicketSummary(task), url: `https://app.clickup.com/t/${encodeURIComponent(task.id)}`,
+    ...(Array.isArray(task.attachments) ? { attachments: normalizeAttachments(task.attachments) } : {}),
   };
 }
 
@@ -172,4 +174,22 @@ export async function getTicket({ taskId, listId = process.env.CLICKUP_TICKETS_L
   // O webhook já está limitado à lista; confirme também a lista principal do recurso.
   if (String(task?.list?.id) !== listId) return null;
   return normalizeTicket(task);
+}
+
+export async function addTicketAssignee({ taskId, assigneeId, token = process.env.CLICKUP_API_TOKEN, listId = process.env.CLICKUP_TICKETS_LIST_ID, signal } = {}) {
+  if (typeof assigneeId !== 'string' || !/^[1-9]\d*$/.test(assigneeId) || !Number.isSafeInteger(Number(assigneeId))) {
+    throw new ClickUpError('Selecione um responsável válido do ClickUp.');
+  }
+  const current = await getTicket({ taskId, token, listId, signal });
+  if (!current) throw new ClickUpError('O ticket não está disponível na lista configurada.');
+  if (current.assignees.some((user) => user.id === assigneeId)) return { ticket: current, alreadyAssigned: true };
+  // Atualização aditiva: não enviar uma lista completa nem remover responsáveis.
+  await requestClickUp(`/task/${encodeURIComponent(taskId)}`, token, signal, {
+    method: 'PUT', body: { assignees: { add: [Number(assigneeId)] } },
+  });
+  const updated = await getTicket({ taskId, token, listId, signal });
+  if (!updated?.assignees.some((user) => user.id === assigneeId)) {
+    throw new ClickUpError('O ClickUp não confirmou a atribuição. Confira o ticket antes de tentar novamente.');
+  }
+  return { ticket: updated, alreadyAssigned: false };
 }

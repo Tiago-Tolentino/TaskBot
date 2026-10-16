@@ -2,8 +2,10 @@ import { Events, MessageFlags } from 'discord.js';
 import { commands } from '../commands/index.js';
 import { ClickUpError } from '../integrations/clickup.js';
 import { describeError } from '../services/errors.js';
+import { handleTicketAssignment } from '../services/ticketAssignment.js';
 
 export async function handleInteraction(interaction) {
+  if (await handleTicketAssignment(interaction)) return;
   if (interaction.isAutocomplete?.()) {
     try {
       await commands.get(interaction.commandName)?.autocomplete?.(interaction);
