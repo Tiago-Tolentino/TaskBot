@@ -16,6 +16,7 @@ O projeto atende a lista **Tickets** do space **Suporte B2C**. Os IDs da lista, 
 - Consulta de recuperação a cada 10 minutos e ao iniciar, para cobrir falhas de entrega.
 - Menções aos usuários do Discord vinculados aos responsáveis do ClickUp.
 - Botão nos avisos para adicionar um responsável do ClickUp, preservando os atuais.
+- Aviso privado opcional aos responsáveis vinculados ao Discord, no primeiro aviso do ticket ou após atribuição pelo botão.
 - Anexos do ticket enviados junto do aviso, com links de acesso quando o upload não for possível.
 - Controle local dos avisos enviados para evitar repetições nas consultas e nos reinícios normais.
 
@@ -91,6 +92,7 @@ TICKET_NOTIFICATION_CHANNEL_ID=
 TICKET_NOTIFICATION_INTERVAL_SECONDS=600
 TICKET_NOTIFICATION_DISCORD_USER_MAP={}
 TICKET_ASSIGNMENT_ASSIGNEE_IDS=
+TICKET_ASSIGNMENT_DM_ENABLED=false
 
 CLICKUP_WEBHOOK_ENABLED=false
 CLICKUP_WEBHOOK_PORT=3000
@@ -107,8 +109,9 @@ CLOUDFLARED_PATH=
 | `TICKET_NOTIFICATIONS_ENABLED` | Ativa o monitor quando definido como `true`. Padrão: desativado. |
 | `TICKET_NOTIFICATION_CHANNEL_ID` | ID do canal que receberá os avisos automáticos. |
 | `TICKET_NOTIFICATION_INTERVAL_SECONDS` | Intervalo entre consultas de recuperação: inteiro de 30 a 3600 segundos. Padrão: `600` (10 minutos). |
-| `TICKET_NOTIFICATION_DISCORD_USER_MAP` | Objeto JSON que associa IDs do ClickUp a IDs do Discord para as menções. Não limita quais tickets geram avisos. |
+| `TICKET_NOTIFICATION_DISCORD_USER_MAP` | Objeto JSON que associa IDs do ClickUp a IDs do Discord para menções e avisos privados de atribuição. Não limita quais tickets geram avisos. |
 | `TICKET_ASSIGNMENT_ASSIGNEE_IDS` | IDs do ClickUp autorizados no botão de atribuição, separados por vírgula. Vazio: nenhuma atribuição disponível. Não limita os avisos automáticos. |
+| `TICKET_ASSIGNMENT_DM_ENABLED` | Envia um privado aos responsáveis vinculados no primeiro aviso de um ticket novo ou após uma nova atribuição pelo botão. Padrão: `false`. |
 | `CLICKUP_WEBHOOK_ENABLED` | Ativa o servidor de webhook, o túnel local e o cadastro automático no ClickUp quando definido como `true`. Padrão: desativado. |
 | `CLICKUP_WEBHOOK_PORT` | Porta HTTP local do receptor, de 1024 a 65535. Padrão: `3000`; escuta somente em `127.0.0.1`. |
 | `CLOUDFLARED_PATH` | Caminho opcional do executável. Se vazio, procura `.tools/cloudflared` e depois `cloudflared` no PATH. |
@@ -214,19 +217,21 @@ O bot avisa sobre **qualquer ticket novo na lista configurada**, inclusive sem r
 
    Preencha o canal e mantenha as credenciais, `CLICKUP_TICKETS_LIST_ID` e `CLICKUP_WORKSPACE_ID` configurados.
 
-3. Execute `npm start`. O bot inicia a recuperação, abre o receptor HTTP local, inicia o túnel e cadastra no ClickUp um webhook para `taskCreated`, limitado à lista Tickets. Aguarde o log `Webhook ClickUp ativo via túnel local`.
+3. Execute `npm start`. O bot inicia a recuperação, abre o receptor HTTP local, inicia o túnel e cadastra no ClickUp um webhook para `taskCreated` e `taskStatusUpdated`, limitado à lista Tickets. Aguarde o log `Webhook ClickUp ativo via túnel local`.
 
-O [Quick Tunnel da Cloudflare](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/) fornece um endereço HTTPS temporário, sem exigir conta ou domínio. A cada nova execução, o endereço pode mudar; o bot atualiza o mesmo webhook salvo em `.data/`. Não é necessário copiar a URL manualmente para o ClickUp.
+O [Quick Tunnel da Cloudflare](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/) fornece um endereço HTTPS temporário, sem exigir conta ou domínio. A cada nova execução, o endereço pode mudar; o bot atualiza o mesmo webhook salvo em `.data/`. Não é necessário copiar a URL manualmente para o ClickUp. Se o cadastro falhar, o bot mantém o mesmo túnel e tenta novamente após 15, 30 e depois 60 segundos, sem gerar um endereço novo a cada tentativa.
 
 O computador, o bot, a conexão de rede e o túnel precisam permanecer ativos. Quick Tunnels são voltados ao desenvolvimento e não têm garantia de disponibilidade. Se o processo do túnel encerrar, o bot tenta recriá-lo após 60 segundos. O encerramento normal do bot também encerra seu túnel.
 
 ### Recepção e recuperação
 
-1. O ClickUp envia o evento de criação ao endpoint `/webhooks/clickup`.
+1. O ClickUp envia eventos de criação e status ao endpoint `/webhooks/clickup`. O evento de status também é emitido na criação, conforme a [documentação do ClickUp](https://developer.clickup.com/docs/webhooktaskpayloads), e oferece um segundo caminho para receber o ticket novo. Alterar o status de um ticket já avisado não repete o aviso.
 2. O bot valida a assinatura HMAC-SHA256 sobre o corpo original e o ID do webhook. O receptor não publica arquivos nem oferece outras rotas.
 3. O ID do ticket é persistido em uma fila local antes da resposta de aceitação. O envio ao Discord acontece em segundo plano.
 4. O bot consulta os detalhes daquele ticket e aplica o período de acompanhamento e o histórico de avisos. Tickets já avisados não geram um novo aviso.
 5. A consulta de recuperação busca todas as páginas necessárias ao iniciar e, por padrão, a cada **10 minutos após a consulta anterior terminar**. Ela recupera tickets que não chegaram por webhook, inclusive durante períodos offline. A saúde do webhook também é verificada a cada 10 minutos; se necessário, o cadastro é reativado.
+
+O log `Webhook recebido e persistido` identifica o evento e o ID do ticket após validar e gravar sua recepção, sem expor o conteúdo ou o segredo. Se não houver esse registro, o evento ainda não foi recebido e a consulta periódica é o caminho de recuperação.
 
 Falhas no processamento da fila são tentadas novamente após 30 segundos. O webhook e a recuperação compartilham o controle de envio para evitar corridas e duplicações. Um ticket removido ou fora da lista principal configurada é descartado na consulta individual; a recuperação periódica também considera tickets vinculados a múltiplas listas.
 
@@ -247,6 +252,25 @@ Selecione uma pessoa para **adicioná-la ao ticket**, preservando todos os respo
 Após confirmar a alteração no ClickUp, o bot atualiza o aviso original com os responsáveis atuais. Os anexos já enviados permanecem na mensagem; a atualização não repete pings. Se a atualização do aviso falhar, a confirmação privada informa que a atribuição no ClickUp foi concluída.
 
 Qualquer pessoa com acesso ao canal de avisos pode abrir seu próprio menu. Apenas quem abriu uma seleção pode usá-la. O menu expira após 10 minutos ou ao reiniciar o bot; clique novamente no botão do aviso para abrir outro. O botão dos avisos gerados com esta funcionalidade continua funcionando após reinícios.
+
+### Aviso privado ao responsável
+
+Para habilitar, defina `TICKET_ASSIGNMENT_DM_ENABLED=true` no `.env` e reinicie o bot. O destinatário é obtido do mesmo `TICKET_NOTIFICATION_DISCORD_USER_MAP` utilizado nas menções. Os IDs da instalação devem ficar somente no `.env` local.
+
+Depois de confirmar e persistir o aviso de um ticket novo no canal, o bot também tenta enviar uma mensagem privada a cada responsável que já estiver atribuído e tiver vínculo com o Discord. Tickets sem responsável ou sem vínculo continuam sendo avisados normalmente no canal. O mapa de usuários e a opção de privado nunca filtram o aviso público.
+
+Ao adicionar um responsável pelo botão **Escolher responsável**, o bot primeiro confirma a atribuição no ClickUp. Se houver vínculo com o Discord, envia uma mensagem privada àquela pessoa com **título, status, responsáveis, resumo, link e anexos**, usando o mesmo formato de informações e limites do aviso no canal. No privado, o botão abre o ticket no ClickUp; a escolha de responsáveis continua no servidor.
+
+Exemplo com IDs fictícios:
+
+```dotenv
+TICKET_ASSIGNMENT_DM_ENABLED=true
+TICKET_NOTIFICATION_DISCORD_USER_MAP={"12345678":"123456789012345678"}
+```
+
+Responsáveis sem vínculo continuam podendo ser atribuídos, mas não recebem privado; a confirmação informa essa situação. Para habilitar um novo colaborador, adicione seu par de IDs ao mapa e reinicie o bot. Selecionar alguém que já estava atribuído não envia outro privado. Uma nova atribuição posterior, após a pessoa ter sido removida do ticket, pode gerar um novo aviso.
+
+Se o Discord bloquear mensagens diretas ou houver falha de entrega, a atribuição no ClickUp permanece concluída e a confirmação privada de quem fez a escolha informa o problema. Uma falha no privado nunca impede ou desfaz o aviso no canal. Não há reenvio automático de privados que falharam nem envio retroativo para tickets já avisados. Além dos responsáveis presentes no primeiro aviso de um ticket novo, o privado é disparado por novas atribuições feitas pelo botão do bot; atribuições posteriores feitas diretamente no ClickUp não disparam este privado.
 
 ### Anexos dos tickets
 
@@ -298,7 +322,7 @@ npm test
 | `npm test` | Executa os testes automatizados locais. |
 | `npm run clickup:check` | Valida a autenticação na API real do ClickUp. |
 
-Os testes locais simulam APIs, canais e interações. Cobrem configuração, comandos, paginação, filtros, sugestões, resumos, navegação, menções, persistência, assinaturas de webhook, fila, concorrência, escolha de responsáveis, atualização aditiva, anexos e falhas do monitor. Os testes HTTP usam somente um servidor local simulado. Eles não enviam mensagens reais nem modificam tickets no ClickUp.
+Os testes locais simulam APIs, canais e interações. Cobrem configuração, comandos, paginação, filtros, sugestões, resumos, navegação, menções, persistência, assinaturas de webhook, fila, concorrência, escolha de responsáveis, atualização aditiva, mensagens privadas, anexos e falhas do monitor. Os testes HTTP usam somente um servidor local simulado. Eles não enviam mensagens reais nem modificam tickets no ClickUp.
 
 Para uma validação real, execute `/test` e `/ticket` no Discord. Para testar o monitor, crie um ticket novo após a ativação, com ou sem responsável, e confira o aviso no canal e o log de confirmação com o ID da mensagem.
 
@@ -327,6 +351,7 @@ Toda comunicação com o Discord passa pelo `discord.js`. A integração com o C
 | A menção não notifica a pessoa | Confira o vínculo de IDs, a atribuição no ticket, o acesso ao canal e as configurações de notificações do usuário. |
 | O ClickUp limita as requisições | Aguarde antes de repetir a pesquisa e mantenha o intervalo do monitor dentro da configuração permitida. |
 | O botão de responsável não funciona | Confirme que o bot está ativo, que o aviso foi gerado com esta funcionalidade e que o token tem acesso de edição. Se o menu expirou, abra outro pelo botão. |
+| O responsável não recebeu o privado | Confira `TICKET_ASSIGNMENT_DM_ENABLED`, o vínculo de IDs e as configurações de mensagens diretas do destinatário. A confirmação da escolha informa falhas. Selecionar alguém já atribuído não reenvia o aviso. |
 | Um arquivo não veio anexado | Confira a permissão Anexar arquivos e os limites de tamanho/quantidade. Use os links do aviso ou abra o ticket. |
 | O túnel ou webhook não conecta | Confira a rede, `npm run tunnel:install`, a porta local, o workspace e o acesso da conta do token. A recuperação de 10 minutos continua ativa se o túnel falhar. |
 | O estado dos avisos está inválido | Verifique o arquivo em `.data/` e restaure um backup válido antes de reativar o monitor. |

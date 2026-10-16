@@ -52,12 +52,13 @@ Estas regras descrevem o funcionamento atual. Altere-as quando o pedido do usuá
 - `/help` usa o registro compartilhado de comandos. Ao adicionar um comando, inclua-o em `src/commands/index.js` e forneça uma descrição útil.
 - O registro dos comandos deve preservar comandos existentes que não pertencem a esta alteração.
 - Os avisos automáticos abrangem qualquer ticket novo, inclusive sem responsável. O filtro de responsável continua disponível apenas na pesquisa manual com `/ticket`.
-- O webhook recebe `taskCreated` da lista configurada, valida assinatura sobre o corpo original e persiste o evento antes da confirmação HTTP. Preserve a fila e a deduplicação compartilhada com a recuperação a cada 10 minutos.
+- O webhook recebe `taskCreated` e `taskStatusUpdated` da lista configurada, valida assinatura sobre o corpo original e persiste o evento antes da confirmação HTTP. Preserve a fila e a deduplicação compartilhada com a recuperação a cada 10 minutos.
 - O túnel local deve expor somente o receptor do webhook. Preserve seu gerenciamento e encerramento junto com o bot, sem repassar tokens ao processo do túnel.
 - Preserve o marco `allTicketsSince` do estado: ele impede avisos retroativos ao migrar da antiga regra com filtro de responsáveis. O segredo do webhook fica somente em `.data/`.
 - Preserve a recuperação após reinício, o controle de tickets já avisados, os limites de tempo das consultas e o cancelamento no encerramento.
 - O menu de atribuição deve mostrar somente os IDs autorizados em `TICKET_ASSIGNMENT_ASSIGNEE_IDS`, em ordem alfabética, e revalidar a autorização na seleção. Essa restrição não filtra os avisos de novos tickets nem a pesquisa manual.
 - A escolha de responsável nos avisos deve adicionar o usuário no ClickUp, preservando os atuais, e confirmar a alteração antes de informar sucesso. Preserve a validação da lista, do canal, do autor da mensagem e da pessoa que abriu o menu.
+- Avisos privados devem ser enviados após persistir o primeiro aviso público de um ticket novo que já tenha responsável vinculado, ou após confirmar uma nova atribuição pelo botão, quando habilitados e com vínculo explícito do responsável ao Discord. O aviso no canal independe desse vínculo e uma falha no privado não deve invalidar seu estado. Não repetir ao selecionar alguém já atribuído. Uma falha de entrega deve ser informada sem desfazer a atribuição.
 - Preserve os anexos existentes ao atualizar um aviso e não repita pings nessa edição. Downloads devem ter limites de tamanho/tempo, aceitar apenas hosts de arquivos previstos e nunca repassar o token do ClickUp.
 - Preserve o estado em `.data/`. Não apague, reinicie nem substitua esse estado para facilitar testes; use armazenamento temporário e simulado.
 - Menções automáticas devem se limitar aos responsáveis atribuídos que tenham vínculo configurado com o Discord. Texto vindo do ClickUp nunca deve habilitar menções a `@everyone`, cargos ou usuários arbitrários.
