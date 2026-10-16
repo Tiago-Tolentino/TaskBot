@@ -56,7 +56,7 @@ async function main() {
     if (!notificationConfig || stopping) return;
     notificationMonitor = await startTicketNotifications(readyClient, notificationConfig);
     if (stopping) { await notificationMonitor.stop(); return; }
-    if (webhookConfig) webhookService = await startClickUpWebhook(notificationMonitor, webhookConfig, notificationConfig);
+    if (webhookConfig) webhookService = await startClickUpWebhook(notificationMonitor, webhookConfig, notificationConfig, readyClient);
     if (stopping) await webhookService?.stop();
   });
   client.on(Events.Error, (error) => console.error(`[ERRO] ${describeError(error)}`));

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { readWebhookConfig } from '../src/config.js';
 import { getTicket } from '../src/integrations/clickup.js';
-import { ensureClickUpWebhook, registerWebhookWithRetry } from '../src/services/clickupWebhook.js';
+import { ensureClickUpWebhook, registerWebhookWithRetry, verifyTunnelEndpoint } from '../src/services/clickupWebhook.js';
 import { createTicketMonitor } from '../src/services/ticketNotifications.js';
 import { createWebhookInbox } from '../src/services/webhookInbox.js';
 import { startWebhookServer, TICKET_WEBHOOK_EVENTS, verifyWebhookSignature } from '../src/services/webhookServer.js';
@@ -208,4 +208,24 @@ test('encerramento interrompe tentativas de cadastro sem abrir outra conexão', 
     attempts++; throw new Error('rede');
   }, { signal: controller.signal, wait: async () => controller.abort() }));
   assert.equal(attempts, 1);
+});
+
+
+test('túnel público precisa responder pela rota correta antes do cadastro', async () => {
+  const endpoint = 'https://example.com/webhooks/clickup';
+  await verifyTunnelEndpoint(endpoint, { probe: async (url, options) => {
+    assert.equal(url, endpoint); assert.equal(options.method, 'GET'); assert.equal(options.redirect, 'error');
+    return new Response(null, { status: 405 });
+  } });
+  await assert.rejects(verifyTunnelEndpoint(endpoint, { wait: async () => {}, probe: async () => { throw new Error('dados externos'); } }), /endereço público/);
+  await assert.rejects(verifyTunnelEndpoint(endpoint, { wait: async () => {}, probe: async () => new Response(null, { status: 502 }) }), /endereço público/);
+});
+
+
+test('rota pública aguarda propagação sem trocar o endereço a cada tentativa', async () => {
+  const pauses = []; let calls = 0;
+  await verifyTunnelEndpoint('https://example.com/webhooks/clickup', { wait: async (ms) => pauses.push(ms), probe: async () => {
+    calls++; if (calls < 3) throw new Error('DNS ainda indisponível'); return new Response(null, { status: 405 });
+  } });
+  assert.equal(calls, 3); assert.deepEqual(pauses, [5000, 15000]);
 });
